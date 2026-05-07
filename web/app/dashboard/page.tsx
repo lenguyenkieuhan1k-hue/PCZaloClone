@@ -31,9 +31,16 @@ export default async function DashboardPage({ searchParams }: { searchParams: Da
           <h1 className="text-3xl font-bold">Tài khoản</h1>
           <p className="mt-1 text-gray-500 text-sm">{user.email}</p>
         </div>
-        <Link href="/pricing" className="px-4 py-2 rounded-lg bg-brand text-white text-sm hover:bg-brand-dark">
-          Mua key mới
-        </Link>
+        <div className="flex items-center gap-2">
+          {user.isAdmin && (
+            <Link href="/admin" className="px-4 py-2 rounded-lg border border-amber-300 bg-amber-50 text-amber-700 text-sm hover:bg-amber-100">
+              Quản trị Admin
+            </Link>
+          )}
+          <Link href="/pricing" className="px-4 py-2 rounded-lg bg-brand text-white text-sm hover:bg-brand-dark">
+            Mua key mới
+          </Link>
+        </div>
       </div>
 
       {(searchParams?.paid || searchParams?.msg) && (

@@ -28,6 +28,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <nav className="flex items-center gap-6 text-sm">
               <Link href="/pricing" className="hover:text-brand">Bảng giá</Link>
               <Link href="/dashboard" className="hover:text-brand">Tài khoản</Link>
+              {user?.isAdmin && <Link href="/admin" className="hover:text-brand">Quản trị</Link>}
               <a href="https://zalo.me/0981897779" target="_blank" rel="noreferrer" className="hover:text-brand">Liên hệ</a>
               {!user ? (
                 <Link href="/auth/sign-in" className="px-4 py-2 rounded-lg bg-brand text-white hover:bg-brand-dark">Đăng nhập</Link>
