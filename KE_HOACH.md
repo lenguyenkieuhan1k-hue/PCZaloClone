@@ -142,25 +142,76 @@ Ghi chú:
 
 ---
 
-### 🎯 Chi tiết cho tiếp theo (Claude sẽ đọc)
+#### Phase 2 (Important) — Payment Integration + Checkout
 
-**Checkout flow cần làm:**
-- Create route `/app/checkout/upgrade/[licenseId]/page.tsx` (display QR)
-- Create route `/app/checkout/renewal/[licenseId]/page.tsx` (display QR)
-- Update modals: onClick → redirect thay vì fetch API
-- SePay webhook: khi payment ok → callback success page → redirect dashboard
+**Flow sửa đổi (`/api/upgrade-license` + `/api/renew-license`):**
+```
+Modal upgrade (user select tier + duration):
+  Click "Tiếp tục"
+  → POST /api/upgrade-license
+     → Create new license with status='pending'
+     → Create payment record (method='upgrade', license_id=newLicenseId)
+     → Return { newLicenseId, newKey, transferCount, price }
+  → Show memo + amount, offer copy
+  → Redirect /checkout/upgrade/[newLicenseId]
+     → Generate SePay QR (memo: "ZM <userId8> <newTier> <duration>")
+     → Show "Chuyển khoản để activate"
 
-**Tier options cho upgrade:**
-- Current tier-6 → tier-10, tier-15, tier-25, tier-50, tier-100
-- Current tier-15 → tier-25, tier-50, tier-100
-- Current tier-25 → tier-50, tier-100
-- Current tier-1 (free) → tier-6, tier-10, etc
-- Không allow downgrade (tier-15 → tier-6)
+Modal renew (user select duration):
+  Click "Tiếp tục"
+  → POST /api/renew-license
+     → Create payment record (method='renewal', license_id=licenseId)
+     → Return { oldExpires, newExpires, price }
+  → Redirect /checkout/renew/[licenseId]
+     → Generate SePay QR (memo: "ZM <userId8> <tier> <duration>")
+```
 
-**Prorate logic (TBD):**
-- Option 1: Full price (current) — user pay full amount
-- Option 2: Prorate = (days_remaining / 30) * old_price, discount new_price
-- Recommend: Full price for simplicity
+**Webhook `/api/sepay-webhook` modifications:**
+```
+Khi nhận payment từ SePay:
+  1. Parse memo → tierId, duration, userId (existing)
+  2. Check payment record by sepay_txn_id:
+     - If payment.method='new':
+       Create new license (existing logic)
+     - If payment.method='upgrade':
+       → Find new_license_id from payment
+       → UPDATE licenses SET status='active' WHERE id=new_license_id
+       → Email: "Nâng cấp thành công! Key: <newKey>"
+     - If payment.method='renewal':
+       → Find license_id from payment
+       → UPDATE licenses SET expires_at=... WHERE id=license_id
+       → Email: "Gia hạn thành công! Hết hạn: <newDate>"
+  3. Mark payment status='paid'
+```
+
+**Checkout pages (need create):**
+- `/checkout/upgrade/[newLicenseId]/page.tsx` — show upgrade details + SePay QR
+- `/checkout/renew/[licenseId]/page.tsx` — show renewal details + SePay QR
+- Reuse styling từ `/checkout/[plan]/page.tsx`
+
+**LicenseTable modifications:**
+```typescript
+// Modal "Tiếp tục" button onClick:
+const handleUpgrade = async (licenseId: string) => {
+  const res = await fetch('/api/upgrade-license', { /* ... */ })
+  const data = res.json()
+  if (data.ok) {
+    router.push(`/checkout/upgrade/${data.newLicenseId}`)
+  }
+}
+
+const handleRenew = async (licenseId: string) => {
+  const res = await fetch('/api/renew-license', { /* ... */ })
+  const data = res.json()
+  if (data.ok) {
+    router.push(`/checkout/renew/${licenseId}`)
+  }
+}
+```
+
+---
+
+## 0f. Thiết kế License Multi-Key + Renewal (2026-05-07 chiều — tổng hợp cho Claude)
 
 ---
 

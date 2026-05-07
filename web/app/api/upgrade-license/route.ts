@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
     const price = newTier.prices[duration]
     const durationDays = DURATION_DAYS[duration]
 
-    // -- Create new license with same or extended expiry --
+    // -- Create new license with status='pending' (will activate after SePay payment) --
     const newExpiresAt = new Date()
     newExpiresAt.setDate(newExpiresAt.getDate() + durationDays)
 
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
         account_quota: newTier.accountQuota,
         duration,
         expires_at: newExpiresAt.toISOString(),
-        status: 'active',
+        status: 'pending', // Will become 'active' after webhook confirms SePay payment
         parent_license_id: oldLicenseId, // Link to old license
       })
       .select()
@@ -123,20 +123,20 @@ export async function POST(req: NextRequest) {
     // -- Create payment record for this upgrade --
     const { data: payment } = await admin.from('payments').insert({
       user_id: user.id,
-      license_id: newLicenseId,
+      license_id: newLicenseId, // Point to new license (will activate after payment)
       tier_id: new_tier_id,
       duration,
       amount_vnd: price,
-      method: 'upgrade',
+      method: 'upgrade', // Mark as upgrade so webhook knows what to do
       status: 'pending', // Awaiting SePay payment
       memo: `Upgrade từ ${oldLicense.tier_id} → ${new_tier_id}`,
     }).select().single()
 
     return NextResponse.json({
       ok: true,
-      message: 'Upgrade created, awaiting payment',
+      message: 'Upgrade initiated, awaiting payment',
+      newLicenseId, // Return new license ID for checkout page
       newKey,
-      newLicenseId,
       transferCount,
       price,
       payment: payment?.id,

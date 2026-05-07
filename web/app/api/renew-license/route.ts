@@ -76,11 +76,11 @@ export async function POST(req: NextRequest) {
       .from('payments')
       .insert({
         user_id: user.id,
-        license_id,
+        license_id, // Original license
         tier_id: license.tier_id,
         duration,
         amount_vnd: price,
-        method: 'renewal',
+        method: 'renewal', // Mark as renewal so webhook knows what to do
         status: 'pending', // Awaiting SePay payment
         memo: `Gia hạn ${duration} cho ${license.key}`,
       })
@@ -89,8 +89,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      message: 'Renewal payment initiated',
+      message: 'Renewal initiated, awaiting payment',
       key: license.key,
+      licenseId: license.id, // Return for checkout page
       oldExpires: license.expires_at,
       newExpires: newExpires.toISOString(),
       price,
