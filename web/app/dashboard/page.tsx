@@ -84,10 +84,9 @@ export default async function DashboardPage({ searchParams }: { searchParams: Da
                   {' • '}Active trên: <span className="text-gray-700">{l.active_device_name || (l.active_session_id ? 'thiết bị ẩn danh' : 'chưa có')}</span>
                 </div>
               </div>
-              <button className="px-3 py-1.5 rounded-lg border text-sm hover:border-brand"
-                      onClick={() => { /* TODO(phase-3): implement copy + renew flow */ }}>
-                Gia hạn
-              </button>
+              <span className="px-3 py-1.5 rounded-lg border text-sm text-gray-500">
+                Gia hạn (sắp có)
+              </span>
             </div>
           ))}
         </div>
