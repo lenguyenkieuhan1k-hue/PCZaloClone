@@ -9,11 +9,12 @@ export async function GET() {
       `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`,
       {
         headers: { 'User-Agent': 'ZaloMask-Web' },
-        next: { revalidate: 300 }, // cache 5 phút
+        cache: 'no-store', // không cache
       }
     )
 
     if (!res.ok) {
+      console.error(`[/api/download] GitHub API error: ${res.status}`)
       return NextResponse.redirect(
         `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`,
         { status: 302 }
@@ -21,19 +22,24 @@ export async function GET() {
     }
 
     const release = await res.json()
+    console.log(`[/api/download] Release tag: ${release.tag_name}, assets: ${release.assets?.length || 0}`)
+    
     const asset = release.assets?.find((a: { name: string; browser_download_url: string }) =>
       a.name.endsWith('.exe')
     )
 
     if (!asset) {
+      console.error(`[/api/download] No .exe asset found in release ${release.tag_name}`)
       return NextResponse.redirect(
         `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`,
         { status: 302 }
       )
     }
 
+    console.log(`[/api/download] Found asset: ${asset.name}, redirecting to: ${asset.browser_download_url}`)
     return NextResponse.redirect(asset.browser_download_url, { status: 302 })
-  } catch {
+  } catch (err) {
+    console.error(`[/api/download] Error:`, err)
     return NextResponse.redirect(
       `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`,
       { status: 302 }
