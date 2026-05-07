@@ -286,12 +286,16 @@ export async function POST(req: NextRequest) {
   const { data: userMatch } = await admin
     .from('users')
     .select('id, email, display_name')
-    .like('id', `${memo.userId}%`)
-    .limit(2)
+    .ilike('id', `${memo.userId}%`)
+    .limit(10)
 
   console.error(`[WEBHOOK-DEBUG] User lookup for prefix '${memo.userId}': found=${userMatch?.length || 0} matches`)
-  if (!userMatch || userMatch.length !== 1) {
-    console.error(`[WEBHOOK-DEBUG] USER RESOLUTION FAILED: ambiguous or not found`)
+  if (userMatch && userMatch.length > 0) {
+    console.error(`[WEBHOOK-DEBUG] User match results:`, userMatch.map((u) => ({ id: u.id, email: u.email })))
+  }
+  
+  if (!userMatch || userMatch.length === 0) {
+    console.error(`[WEBHOOK-DEBUG] USER NOT FOUND: no users match prefix '${memo.userId}'`)
     await upsertPaymentRow(admin, sepayTxnId, {
       amount_vnd: rawAmount,
       memo: memoText,
@@ -299,8 +303,21 @@ export async function POST(req: NextRequest) {
       tier_id: tier.id,
       duration: memo.duration,
     }, existing?.id)
-    return ok({ matched: true, accepted: false, reason: userMatch?.length ? 'ambiguous-user' : 'user-not-found' })
+    return ok({ matched: true, accepted: false, reason: 'user-not-found' })
   }
+  
+  if (userMatch.length > 1) {
+    console.error(`[WEBHOOK-DEBUG] USER AMBIGUOUS: multiple users match prefix '${memo.userId}'. Candidates: ${userMatch.map((u) => u.id).join(', ')}`)
+    await upsertPaymentRow(admin, sepayTxnId, {
+      amount_vnd: rawAmount,
+      memo: memoText,
+      status: 'pending',
+      tier_id: tier.id,
+      duration: memo.duration,
+    }, existing?.id)
+    return ok({ matched: true, accepted: false, reason: 'ambiguous-user' })
+  }
+  
   const user = userMatch[0]
   console.error(`[WEBHOOK-DEBUG] User resolved: id=${user.id}, email=${user.email}`)
 
