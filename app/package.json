@@ -14,9 +14,27 @@
     "url": "https://zalomask.com"
   },
   "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --x64 --publish never",
+    "dist:publish": "electron-builder --win nsis --x64 --publish always"
+  },
   "build": {
     "appId": "com.zalomask.app",
     "productName": "ZaloMask",
+    "copyright": "Copyright 2026 ZaloMask",
+    "forceCodeSigning": false,
+    "files": [
+      "**/*",
+      "!legacy/**",
+      "!**/node_modules/.cache/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../config.json",
+        "to": "config.json"
+      }
+    ],
     "publish": [
       {
         "provider": "github",
@@ -26,18 +44,20 @@
       }
     ],
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "renderer/assets/app-icon.ico",
-      "artifactName": "ZaloMask-Setup-${version}.${ext}",
-      "certificateFile": "${CSC_LINK}",
-      "certificatePassword": "${CSC_KEY_PASSWORD}",
-      "signingHashAlgorithms": ["sha256"],
-      "sign": "./customSign.js"
+      "artifactName": "ZaloMask-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "allowToChangeDesktopIcon": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "ZaloMask",
@@ -53,6 +73,7 @@
   },
   "devDependencies": {
     "@electron/asar": "^3.2.10",
-    "electron": "^35.7.5"
+    "electron": "^35.7.5",
+    "electron-builder": "^26.8.1"
   }
 }

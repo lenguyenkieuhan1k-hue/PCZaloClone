@@ -8,9 +8,15 @@ const path = require('path')
 const { spawnSync } = require('child_process')
 const autoUpdate = require('./auto-update')
 
-const ROOT_DIR = path.resolve(__dirname, '..')
+// In dev: __dirname = repo/app/, so .. = repo root (config.json lives there).
+// In packaged: app.isPackaged = true; writable user data goes to userData,
+// config.json is bundled as extraResources → process.resourcesPath/config.json.
+const IS_PACKAGED = app.isPackaged
+const ROOT_DIR = IS_PACKAGED ? app.getPath('userData') : path.resolve(__dirname, '..')
+const CONFIG_PATH = IS_PACKAGED
+  ? path.join(process.resourcesPath, 'config.json')
+  : path.join(path.resolve(__dirname, '..'), 'config.json')
 const PROFILES_DIR = path.join(ROOT_DIR, 'profiles')
-const CONFIG_PATH = path.join(ROOT_DIR, 'config.json')
 const MAIN_HTML = path.join(__dirname, 'renderer', 'index-v2.html')
 const MAIN_PRELOAD = path.join(__dirname, 'preload.js')
 const WEB_PRELOAD = path.join(__dirname, 'web-preload-v2.js')
