@@ -26,6 +26,43 @@ function normalizeMemo(input: string): string {
   return normalized
 }
 
+function normalizeTierId(rawTier: string): string {
+  let tierId = String(rawTier || '').toLowerCase().replace(/\s+/g, '-')
+  tierId = tierId.replace(/([a-z])(\d)/g, '$1-$2')
+
+  const tierSegmentMatch = tierId.match(/^tier(.+?)(\d+.*)$/)
+  if (tierSegmentMatch) {
+    tierId = `tier-${tierSegmentMatch[1]}-${tierSegmentMatch[2]}`
+  }
+
+  if (/^tier\d/.test(tierId)) {
+    tierId = tierId.replace(/^tier(\d)/, 'tier-$1')
+  }
+  if (!tierId.startsWith('tier-') && tierId.startsWith('tier')) {
+    tierId = `tier-${tierId.slice(4).replace(/^-+/, '')}`
+  }
+
+  return tierId.replace(/\-+/g, '-')
+}
+
+function parseCanonicalMemo(input: string): { userId8: string; tierId: string; duration: string } | null {
+  const cleaned = normalizeMemo(input)
+  const match = cleaned.match(/ZM[ \-]?([A-F0-9]{8})[ \-]?(TIER[A-Z0-9\- ]+)[ \-]?(1M|3M|6M|1Y)/)
+  if (!match) return null
+
+  return {
+    userId8: match[1].toLowerCase(),
+    tierId: normalizeTierId(match[2]),
+    duration: match[3].toLowerCase(),
+  }
+}
+
+function canonicalMemoKey(input: string): string | null {
+  const parsed = parseCanonicalMemo(input)
+  if (!parsed) return null
+  return `${parsed.userId8}|${parsed.tierId}|${parsed.duration}`
+}
+
 export async function GET(req: NextRequest) {
   const LOG_PREFIX = '[PAYMENT-STATUS-DEBUG]'
   const memo = String(req.nextUrl.searchParams.get('memo') || '').trim()
@@ -72,13 +109,20 @@ export async function GET(req: NextRequest) {
   }
 
   const target = normalizeMemo(memo)
+  const targetKey = canonicalMemoKey(memo)
   console.error(`${LOG_PREFIX} Normalized target memo: "${target}"`)
+  console.error(`${LOG_PREFIX} Canonical target key: "${targetKey || 'N/A'}"`)
   
   const matchedRows = (rows || []).filter((row) => {
     const got = normalizeMemo(String(row.memo || ''))
     if (!got) return false
-    const match = got === target || got.includes(target) || target.includes(got)
-    console.error(`${LOG_PREFIX} Comparing: got="${got}" vs target="${target}" → ${match}`)
+    const gotKey = canonicalMemoKey(String(row.memo || ''))
+    const canonicalMatch = !!targetKey && !!gotKey && gotKey === targetKey
+    const fallbackMatch = got === target || got.includes(target) || target.includes(got)
+    const match = canonicalMatch || fallbackMatch
+    console.error(
+      `${LOG_PREFIX} Comparing: got="${got}" (key=${gotKey || 'N/A'}) vs target="${target}" (key=${targetKey || 'N/A'}) → canonical=${canonicalMatch}, fallback=${fallbackMatch}, final=${match}`,
+    )
     return match
   })
 
