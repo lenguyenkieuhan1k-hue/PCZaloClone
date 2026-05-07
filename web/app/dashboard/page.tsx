@@ -14,23 +14,34 @@ export default async function DashboardPage({ searchParams }: { searchParams: Da
   if (!user) redirect('/auth/sign-in')
 
   const supabase = serverClient(user.accessToken)
-  
-  // Fetch licenses from new API to get profileCount
-  let licenses = []
-  try {
-    const res = await fetch(`${process.env.NEXTAUTH_URL || 'https://zalomask.com'}/api/licenses`, {
-      headers: {
-        'Cookie': `sb-access-token=${user.accessToken}`,
-      },
-      cache: 'no-store',
-    })
-    const data = await res.json()
-    if (data.ok) {
-      licenses = data.licenses || []
-    }
-  } catch (err) {
-    console.error('Failed to fetch licenses:', err)
+
+  let licenses: any[] = []
+  const { data: rawLicenses, error: licenseErr } = await supabase
+    .from('licenses')
+    .select('id, license_id, key, tier_id, account_quota, duration, expires_at, status, active_machine_id, created_at')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+
+  if (licenseErr) {
+    console.error('[dashboard] failed to fetch licenses:', licenseErr)
+  } else {
+    licenses = await Promise.all(
+      (rawLicenses || []).map(async (license) => {
+        const { count } = await supabase
+          .from('profiles')
+          .select('*', { count: 'exact', head: true })
+          .eq('license_id', license.id)
+
+        return {
+          ...license,
+          profileCount: count || 0,
+        }
+      })
+    )
   }
+
+  const paidLicenseId = String(searchParams?.paid || '').trim()
+  const paidLicenseExists = !!paidLicenseId && licenses.some((l) => l.id === paidLicenseId || l.license_id === paidLicenseId)
 
   const { data: sessions } = await supabase
     .from('sessions')
@@ -59,10 +70,14 @@ export default async function DashboardPage({ searchParams }: { searchParams: Da
 
       {(searchParams?.paid || searchParams?.msg) && (
         <div className="mt-6 p-4 rounded-xl border border-green-200 bg-green-50 text-green-800 text-sm">
-          {searchParams.paid ? (
+          {paidLicenseExists ? (
             <>
               <strong>✅ Thanh toán thành công.</strong> License vừa được cấp đã hiển thị bên dưới.
               Bấm vào key để copy, mở app ZaloMask → Cài đặt → License → dán key vào.
+            </>
+          ) : searchParams.paid ? (
+            <>
+              <strong>⏳ Đã ghi nhận thanh toán.</strong> Hệ thống đang đồng bộ license, vui lòng tải lại trang sau vài giây.
             </>
           ) : (
             <>{decodeURIComponent(String(searchParams.msg || ''))}</>

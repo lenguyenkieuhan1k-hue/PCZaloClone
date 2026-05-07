@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { serverClient } from '@/lib/supabase'
 
 export async function GET(req: NextRequest) {
-  const client = serverClient()
+  const accessToken = req.cookies.get('sb-access-token')?.value
+  const client = serverClient(accessToken)
 
   try {
-    const { data: { user }, error: authError } = await client.auth.getUser()
+    const { data: { user }, error: authError } = await client.auth.getUser(accessToken)
     if (authError || !user) {
       return NextResponse.json({ ok: false, message: 'Unauthorized' }, { status: 401 })
     }
