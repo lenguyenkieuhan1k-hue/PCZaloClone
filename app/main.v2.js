@@ -355,6 +355,7 @@ function listAllProfiles() {
       profileName: name,
       displayName: meta.displayName || name,
       launchMode: 'web2',
+      license_id: meta.license_id || '',  // Multi-key: license_id for partition isolation
       createdAt: meta.createdAt || null,
       updatedAt: meta.updatedAt || null,
       importedAt: meta.importedAt || null,
@@ -379,7 +380,14 @@ function saveProfileMeta(profileName, meta) {
   writeJson(profileMetaPath(profileName), meta)
 }
 
-function partitionFor(profileName) {
+function partitionFor(profileName, licenseId = '') {
+  // Multi-key support: partition includes license_id for data isolation per key
+  // Format: persist:zalomask-web-<licenseId>:<profileName>
+  // Fallback for legacy profiles without license_id: persist:zalomask-web-<profileName>
+  if (licenseId && licenseId.trim()) {
+    return `persist:zalomask-web-${licenseId}:${profileName}`
+  }
+  // Legacy: profiles without license_id use simple partition
   return `persist:zalomask-web-${profileName}`
 }
 
@@ -849,7 +857,10 @@ async function openWebProfile(profileName) {
     return { ok: true }
   }
 
-  const partition = partitionFor(profileName)
+  // Multi-key: use license_id from meta if available (new profiles)
+  // Legacy profiles without license_id will use simple partition for backward compatibility
+  const licenseId = meta.license_id || ''
+  const partition = partitionFor(profileName, licenseId)
   const ses = session.fromPartition(partition)
   const webSession = meta.webSession || {}
   const profileProxy = normalizeProxy(meta.proxy || {})
@@ -1182,10 +1193,17 @@ ipcMain.handle('add-profile', async (_event, payload) => {
 
     const displayName = String(payload?.displayName || '').trim() || 'Zalo Web'
     const profileName = uniqueProfileName(displayName)
+    
+    // Multi-key support: assign a license_id to each profile
+    // For local app: use a generated UUID (later can be linked to web license during sync)
+    // Format stored in profile meta allows partition isolation per key
+    const licenseId = crypto.randomUUID()
+    
     const meta = {
       displayName,
       profileName,
       launchMode: 'web2',
+      license_id: licenseId,  // New: multi-key support
       createdAt: new Date().toISOString(),
       proxy: normalizeProxy(payload?.proxy || {}),
       fingerprint: generateFingerprint(),
@@ -1199,7 +1217,7 @@ ipcMain.handle('add-profile', async (_event, payload) => {
 
     saveProfileMeta(profileName, meta)
     await openWebProfile(profileName)
-    return { ok: true, profileName, displayName, launchMode: 'web2' }
+    return { ok: true, profileName, displayName, launchMode: 'web2', license_id: licenseId }
   } catch (error) {
     return { ok: false, message: error?.message || 'Không tạo được profile web' }
   }
