@@ -5,7 +5,7 @@ import { getSessionUser } from '@/lib/auth-helpers'
 
 export const metadata: Metadata = {
   title: 'ZaloMask — Đa tài khoản Zalo PC',
-  description: 'Chạy nhiều tài khoản Zalo PC cùng lúc, sao lưu / khôi phục session đa máy, ẩn trạng thái online — không quét QR lại trên máy mới.',
+  description: 'Quản lý nhiều tài khoản Zalo.',
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'https://zalomask.com')
 }
 
