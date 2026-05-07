@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZaloMask v2</title>
+  <link rel="stylesheet" href="style-v2.css" />
+</head>
+<body>
+  <div class="titlebar">
+    <div class="titlebar-drag"></div>
+    <button class="update-pill hidden" id="updatePill" title="Có bản cập nhật mới">&#x2B06; Bản mới</button>
+    <div class="titlebar-btns">
+      <button class="tb-btn" id="btnMinimize" title="Thu nhỏ">&#8722;</button>
+      <button class="tb-btn tb-close" id="btnClose" title="Đóng">&#215;</button>
+    </div>
+  </div>
+
+  <div class="app-header">
+    <div class="app-logo">
+      <img src="assets/logo-zalomask.svg" alt="ZaloMask" class="app-logo-mark" />
+      <div>
+        <h1>ZaloMask</h1>
+        <p>Web Session Runtime v2</p>
+      </div>
+    </div>
+    <span class="badge">FREE</span>
+  </div>
+
+  <div class="main-tabs">
+    <button class="main-tab active" data-tab="clone">Nhân bản Zalo</button>
+    <button class="main-tab" data-tab="cloud">Đồng bộ đám mây</button>
+    <button class="main-tab" data-tab="tools">Cài đặt</button>
+  </div>
+
+  <div id="statusBar" class="status-bar">Sẵn sàng</div>
+
+  <section class="tab-panel active" id="tab-clone">
+    <div class="list-toolbar">
+      <span id="listCount">Danh sách (0)</span>
+      <div class="toolbar-right">
+        <button class="link-btn" id="btnExport">Sao lưu</button>
+        <span class="sep">|</span>
+        <button class="link-btn" id="btnImport">Khôi phục</button>
+      </div>
+    </div>
+
+    <div class="list-header">
+      <span class="col-avatar">Ảnh</span>
+      <span class="col-name">Tên Zalo</span>
+      <span class="col-meta">Thông tin / Công cụ</span>
+    </div>
+
+    <div class="account-list" id="accountList"></div>
+
+    <div class="bottom-bar">
+      <button class="btn-outline" id="btnOpenFolder">MỞ THƯ MỤC</button>
+      <button class="btn-outline" id="btnLaunchAll">MỞ TẤT CẢ</button>
+      <button class="btn-primary" id="btnAddAccount">THÊM ZALO</button>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-cloud">
+    <div class="settings-page">
+      <div class="settings-section">
+        <p class="settings-section-title">Trạng thái dịch vụ</p>
+        <div class="settings-row">
+          <div class="settings-row-info">
+            <span class="settings-row-label">Cloud backend</span>
+            <span class="settings-row-sub">Web local session mode đang hoạt động ổn định.</span>
+          </div>
+          <button class="acc-btn" id="btnCloudRefresh">Làm mới</button>
+        </div>
+      </div>
+
+      <div class="settings-section" style="flex:1">
+        <p class="settings-section-title">Snapshot session theo profile</p>
+        <div class="cloud-list" id="cloudList"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-tools">
+    <div class="settings-page">
+      <div class="settings-section">
+        <p class="settings-section-title">Riêng tư</p>
+        <div class="settings-row">
+          <div class="settings-row-info">
+            <span class="settings-row-label">💬 Ẩn trạng thái Đang soạn tin</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="chkHideTyping" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row-info">
+            <span class="settings-row-label">👁 Ẩn trạng thái Đã xem</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="chkHideSeen" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row-info">
+            <span class="settings-row-label">📥 Ẩn trạng thái Đã nhận</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="chkHideReceived" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <p class="settings-section-title">Công cụ</p>
+        <div class="tool-grid">
+          <button class="tool-card" id="toolOpenFolder">📁 Thư mục profile</button>
+          <button class="tool-card" id="toolLaunchAll">🚀 Mở tất cả</button>
+          <button class="tool-card" id="toolImport">📥 Nhập JSON</button>
+          <button class="tool-card" id="toolExport">💾 Sao lưu nhanh</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <p class="settings-section-title">Tình trạng hệ thống</p>
+        <div class="settings-row">
+          <div class="settings-row-info">
+            <span class="settings-row-label">Tổng quan</span>
+            <span class="settings-row-sub" id="healthSummary">Đang kiểm tra...</span>
+          </div>
+          <button class="acc-btn" id="btnHealthRefresh">Làm mới</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <p class="settings-section-title">License</p>
+        <label class="field-label" for="licenseKeyInput">Activation key</label>
+        <input type="text" class="field-input" id="licenseKeyInput" placeholder="Nhập key kích hoạt" />
+        <div class="tool-grid" style="margin-top:10px">
+          <button class="tool-card" id="btnLicenseActivate">Kích hoạt</button>
+          <button class="tool-card" id="btnLicenseHeartbeat">Heartbeat</button>
+          <button class="tool-card" id="btnLicenseRefresh">Làm mới trạng thái</button>
+          <button class="tool-card" id="btnLicenseDeactivate">Gỡ kích hoạt</button>
+        </div>
+        <p class="settings-row-sub" id="licenseSummary" style="margin-top:10px">Chưa kiểm tra license.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="modal-overlay hidden" id="modalOverlay">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">Thêm tài khoản Zalo</span>
+        <button class="modal-close" id="modalClose">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <label class="field-label">Tên hiển thị</label>
+        <input type="text" class="field-input" id="inputDisplayName" maxlength="60" placeholder="Ví dụ: Zalo Web 3" />
+
+        <div class="proxy-block">
+          <div class="proxy-head">
+            <span class="field-label" style="margin:0">Proxy cho profile này</span>
+            <label class="switch">
+              <input type="checkbox" id="addProxyEnabled" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+          <div id="addProxyFields" class="proxy-fields hidden">
+            <input type="text" class="field-input" id="addProxyRaw" placeholder="Dán nhanh: host:port:user:pass hoặc user:pass@host:port" />
+            <div class="proxy-inline-tools">
+              <select class="field-input" id="addProxyProtocol">
+                <option value="HTTP">HTTP</option>
+                <option value="HTTPS">HTTPS</option>
+                <option value="SOCKS5">SOCKS5</option>
+              </select>
+              <button class="acc-btn" id="addProxyQuickPaste" type="button">Dán nhanh</button>
+            </div>
+            <div class="proxy-row-two">
+              <input type="text" class="field-input" id="addProxyHost" placeholder="Host" />
+              <input type="number" class="field-input" id="addProxyPort" placeholder="Port" min="1" max="65535" />
+            </div>
+            <div class="proxy-auth-row">
+              <label class="switch">
+                <input type="checkbox" id="addProxyAuthEnabled" />
+                <span class="switch-slider"></span>
+              </label>
+              <span class="field-label" style="margin:0">Proxy có tài khoản</span>
+            </div>
+            <div id="addProxyAuthFields" class="proxy-row-two hidden">
+              <input type="text" class="field-input" id="addProxyUsername" placeholder="Username" />
+              <input type="text" class="field-input" id="addProxyPassword" placeholder="Password" />
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="acc-btn" id="modalCancel">Hủy</button>
+        <button class="btn-primary" id="btnModalAdd">THÊM</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="proxyOverlay">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">Cập nhật Proxy</span>
+        <button class="modal-close" id="proxyClose">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <p class="settings-row-sub" id="proxyProfileName" style="margin-bottom:8px"></p>
+        <div class="proxy-head">
+          <span class="field-label" style="margin:0">Bật proxy</span>
+          <label class="switch">
+            <input type="checkbox" id="proxyEnabled" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+        <div id="proxyFields" class="proxy-fields hidden">
+          <input type="text" class="field-input" id="proxyRaw" placeholder="Dán nhanh: host:port:user:pass hoặc user:pass@host:port" />
+          <div class="proxy-inline-tools">
+            <select class="field-input" id="proxyProtocol">
+              <option value="HTTP">HTTP</option>
+              <option value="HTTPS">HTTPS</option>
+              <option value="SOCKS5">SOCKS5</option>
+            </select>
+            <button class="acc-btn" id="proxyQuickPaste" type="button">Dán nhanh</button>
+          </div>
+          <div class="proxy-row-two">
+            <input type="text" class="field-input" id="proxyHost" placeholder="Host" />
+            <input type="number" class="field-input" id="proxyPort" placeholder="Port" min="1" max="65535" />
+          </div>
+          <div class="proxy-auth-row">
+            <label class="switch">
+              <input type="checkbox" id="proxyAuthEnabled" />
+              <span class="switch-slider"></span>
+            </label>
+            <span class="field-label" style="margin:0">Proxy có tài khoản</span>
+          </div>
+          <div id="proxyAuthFields" class="proxy-row-two hidden">
+            <input type="text" class="field-input" id="proxyUsername" placeholder="Username" />
+            <input type="text" class="field-input" id="proxyPassword" placeholder="Password" />
+          </div>
+        </div>
+        <p class="settings-row-sub" id="proxyCheckResult" style="margin-top:10px"></p>
+      </div>
+      <div class="modal-footer">
+        <button class="acc-btn" id="proxyCheck">Kiểm tra</button>
+        <button class="acc-btn" id="proxyCancel">Hủy</button>
+        <button class="btn-primary" id="proxySave">Lưu</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="backupOverlay">
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">Chọn profile cần sao lưu</span>
+        <button class="modal-close" id="backupClose">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <div class="backup-tools">
+          <button class="link-btn" id="backupSelectAll">Chọn tất cả</button>
+          <span class="sep">|</span>
+          <button class="link-btn" id="backupClearAll">Bỏ chọn</button>
+        </div>
+        <div class="backup-list" id="backupList"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="acc-btn" id="backupCancel">Hủy</button>
+        <button class="btn-primary" id="backupConfirm">SAO LƯU</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay hidden" id="profileInfoOverlay">
+    <div class="modal profile-info-modal">
+      <div class="modal-header">
+        <span class="modal-title">Thông tin profile</span>
+        <button class="modal-close" id="profileInfoClose">&#215;</button>
+      </div>
+      <div class="modal-body">
+        <pre class="profile-info-pre" id="profileInfoContent"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="acc-btn" id="profileInfoCopy">Copy JSON</button>
+        <button class="btn-primary" id="profileInfoOk">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer-v2.js"></script>
+
+  <!-- Update overlay -->
+  <div class="modal-overlay hidden" id="updateOverlay">
+    <div class="modal" style="max-width:480px">
+      <div class="modal-header">
+        <span class="modal-title">Có bản cập nhật ZaloMask</span>
+        <button class="modal-close" id="updateClose">&#215;</button>
+      </div>
+      <div class="modal-body" style="padding-bottom:16px">
+        <p style="font-size:13px;margin:8px 0">
+          <strong>Phiên bản hiện tại:</strong> <span id="updateLocalVer">-</span><br />
+          <strong>Phiên bản mới:</strong> <span id="updateRemoteVer">-</span>
+        </p>
+        <div class="update-notes" id="updateNotes"></div>
+        <div id="updateProgress" class="update-progress hidden">
+          <div class="update-bar"><div class="update-bar-fill" id="updateBarFill"></div></div>
+          <p id="updateProgressText" style="font-size:11px;color:#666;margin-top:6px">Đang tải...</p>
+        </div>
+        <p id="updateStatus" style="font-size:12px;min-height:18px;margin-top:10px"></p>
+      </div>
+      <div class="modal-footer" style="gap:8px;justify-content:flex-end">
+        <button class="tool-card" id="updateLater">Để sau</button>
+        <button class="tool-card primary" id="updateConfirm">Tải &amp; cài đặt</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- License kicked overlay -->
+  <div class="modal-overlay hidden" id="licenseKickedOverlay">
+    <div class="modal" style="max-width:420px">
+      <div class="modal-header">
+        <span class="modal-title">Phiên license đã bị thu hồi</span>
+        <button class="modal-close" id="licenseKickedClose">&#215;</button>
+      </div>
+      <div class="modal-body" style="padding:16px">
+        <p id="licenseKickedMessage" style="font-size:13px;margin:0 0 10px">License đang được dùng ở máy khác.</p>
+        <p style="font-size:12px;color:#666;margin:0">Các cửa sổ Zalo Web sẽ tự đóng. Bạn có thể kích hoạt lại license trong tab Cài đặt nếu muốn dùng tiếp tại máy này.</p>
+      </div>
+      <div class="modal-footer" style="gap:8px;justify-content:flex-end">
+        <button class="tool-card primary" id="licenseKickedOk">Đã hiểu</button>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

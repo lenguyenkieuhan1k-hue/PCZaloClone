@@ -1,0 +1,61 @@
+# --- Node ---
+node_modules/
+*.log
+*.tsbuildinfo
+
+# --- Electron build output ---
+app/dist/
+app/out/
+
+# --- Next.js ---
+web/.next/
+web/out/
+web/next-env.d.ts
+web/supabase/.temp/
+web/client_secret_*.json
+
+# --- Runtime files (per machine) ---
+license-state.json
+app-runtime.log
+config.local.json
+
+# --- Local secrets / environment ---
+**/.env.local
+**/.env.*.local
+
+# --- Local profile/session data ---
+profiles/
+
+# --- User exports / backups ---
+ZaloMask_*.json
+ZaloMask_zalo_web_*.json
+
+# --- Profile data (chứa cookies + session — không bao giờ commit) ---
+profiles/*/
+!profiles/.gitkeep
+
+# --- Backup exports — chứa session, không commit ---
+ZaloMask_*.json
+ZaloMask_*.zip
+ZaloMask_*.zmask
+*.session-export.json
+
+# --- Env ---
+.env
+.env.local
+.env.*.local
+web/.env
+web/.env.local
+web/.env.*.local
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# --- Misc ---
+Claude Setup.exe
+*.pfx
+*.p12

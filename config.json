@@ -1,0 +1,15 @@
+{
+  "zaloExe": "C:\\Users\\Admin\\AppData\\Local\\Programs\\Zalo\\Zalo.exe",
+  "hideTyping": false,
+  "hideSeen": false,
+  "hideReceived": false,
+  "hideLastSeen": true,
+  "github": {
+    "owner": "REPLACE_GITHUB_OWNER",
+    "repo": "REPLACE_GITHUB_REPO",
+    "prerelease": false
+  },
+  "licenseApiBaseUrl": "https://zalomask.com",
+  "licensePublicKeyPem": "",
+  "requireLicense": false
+}

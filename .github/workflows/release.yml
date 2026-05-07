@@ -1,0 +1,100 @@
+name: Release ZaloMask installer
+
+# Bấm tag dạng v26.3.2 trên main → workflow tự build NSIS installer + tạo
+# GitHub Release đính kèm. Auto-updater trong app sẽ phát hiện qua endpoint
+# /releases/latest tự động.
+#
+# Cần setup GitHub secrets:
+# - SIGNING_CERT_BASE64: Base64 của file .pfx (EV code signing cert)
+# - SIGNING_CERT_PASSWORD: Password của .pfx file
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # cần để workflow push assets vào release
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install electron-builder
+        run: npm install --no-save electron-builder@^24.13.3
+
+      - name: Setup code signing certificate (if available)
+        if: env.SIGNING_CERT_BASE64 != ''
+        env:
+          SIGNING_CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        shell: powershell
+        run: |
+          # Decode cert from base64 and save as .pfx
+          $certBase64 = $env:SIGNING_CERT_BASE64
+          $certPath = "${{ runner.temp }}\signing-cert.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
+          
+          # Set env for electron-builder
+          echo "CSC_LINK=$certPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "CSC_KEY_PASSWORD=${{ secrets.SIGNING_CERT_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build NSIS installer
+        env:
+          # Auto-discovery disabled if cert not provided (empty secret = not set)
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.SIGNING_CERT_BASE64 != '' && 'false' || 'false' }}
+          # Pass GH token để electron-builder publish lên Release sẵn có.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ($env:SIGNING_CERT_BASE64) {
+            Write-Host "Building with code signing enabled..."
+            npx electron-builder --win nsis --x64 --publish always
+          } else {
+            Write-Host "Building WITHOUT code signing (set SIGNING_CERT_BASE64 secret to enable)..."
+            npx electron-builder --win nsis --x64 --publish always
+          }
+        shell: powershell
+
+      - name: Upload installer as workflow artifact (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: app/dist/*.exe
+          if-no-files-found: warn
+
+      - name: Create release notes artifact
+        if: success()
+        run: |
+          # Extract tag name and create notes
+          $tag = "${{ github.ref }}" -replace "refs/tags/", ""
+          @{
+            tag = $tag
+            version = $tag -replace "^v", ""
+            builtAt = (Get-Date -Format "o")
+            artifact = (Get-ChildItem "dist/*.exe" | Select-Object -First 1).Name
+          } | ConvertTo-Json | Out-File -FilePath "dist/release-info.json"
+        shell: powershell
+
+      - name: Upload release info artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-info
+          path: app/dist/release-info.json
+

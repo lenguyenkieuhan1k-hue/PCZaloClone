@@ -1,0 +1,58 @@
+{
+  "name": "ZaloMask",
+  "homepage": "https://zalomask.com/",
+  "version": "26.3.1",
+  "description": "ZaloMask - Multi-account & privacy toolkit cho Zalo PC",
+  "engines": {
+    "node": "14.20.0",
+    "npm": "~6.13.4"
+  },
+  "main": "main.v2.js",
+  "author": {
+    "name": "ZaloMask",
+    "email": "contact@zalomask.com",
+    "url": "https://zalomask.com"
+  },
+  "license": "MIT",
+  "build": {
+    "appId": "com.zalomask.app",
+    "productName": "ZaloMask",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "REPLACE_GITHUB_OWNER",
+        "repo": "REPLACE_GITHUB_REPO",
+        "releaseType": "release"
+      }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "renderer/assets/app-icon.ico",
+      "artifactName": "ZaloMask-Setup-${version}.${ext}",
+      "certificateFile": "${CSC_LINK}",
+      "certificatePassword": "${CSC_KEY_PASSWORD}",
+      "signingHashAlgorithms": ["sha256"],
+      "sign": "./customSign.js"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowToChangeDesktopIcon": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ZaloMask",
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "renderer/assets/app-icon.ico",
+      "uninstallerIcon": "renderer/assets/app-icon.ico",
+      "installerHeaderIcon": "renderer/assets/app-icon.ico",
+      "include": "installer.nsh"
+    }
+  },
+  "dependencies": {
+    "sql.js": "^1.14.1"
+  },
+  "devDependencies": {
+    "@electron/asar": "^3.2.10",
+    "electron": "^35.7.5"
+  }
+}
