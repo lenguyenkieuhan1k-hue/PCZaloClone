@@ -81,6 +81,89 @@ Ghi chú:
 
 ---
 
+## 0g. Hiện tại session (2026-05-07 tối — Implement Multi-Key License)
+
+### ✅ Đã hoàn thành (Web backend + UI)
+
+#### Migration 0004 — Multi-key schema
+- Bảng `profiles` (license_id, profile_name, metadata) — partition by license
+- Bảng `license_upgrades` (track upgrade history)
+- Modify `licenses`: thêm `parent_license_id` (tracking), `active_machine_id` (single-session)
+- Modify `cloud_backups`: unique(license_id) thay vì unique(user_id)
+- Helper functions: `get_user_total_quota()`, `get_license_profile_count()`
+
+#### API Routes
+- `GET /api/licenses` — list all user licenses + profile count
+- `GET /api/license/:id` — list profiles for 1 license
+- `POST /api/upgrade-license` — create new key + atomic profile transfer
+- `POST /api/renew-license` — extend license expiry
+
+#### Dashboard UI
+- `LicenseTable` component (client-side): expandable licenses với actions
+- Buttons: "Nâng cấp tier", "Gia hạn", "Huỷ bỏ" (Huỷ chưa implement)
+- Modal Nâng cấp: select tier mới → checkout (placeholder: "Tiếp tục")
+- Modal Gia hạn: select duration → checkout (placeholder: "Tiếp tục")
+- Status badge: Active (green) / Hết hạn (red) / etc
+- Profile counter: "X / Y profiles"
+
+---
+
+### 🔲 TODO tiếp theo
+
+#### Phase 2 (Important) — Payment Integration
+
+1. **Checkout flow for upgrade/renewal**
+   - Thay thế placeholder "Tiếp tục" → redirect `/checkout?type=upgrade&license=...&tier=...` hoặc `/checkout?type=renewal&license=...&duration=...`
+   - Checkout page tạo SePay QR code
+   - Memo format: `ZM <userId8> <tier> <duration>` (tương tự current flow)
+   - Webhook `/api/sepay-webhook` xử lý: update `licenses.expires_at` (renewal) hoặc mark payment
+
+2. **Pricing page upgrade link**
+   - Thêm CTA "Đã có key? Nâng cấp tại dashboard" 
+   - Link: `/dashboard` hoặc phần có highlight
+
+#### Phase 3 (Polish) — Edge cases + Admin
+
+1. **Deactivate license** (`/api/deactivate-license`)
+   - User click "Huỷ bỏ" → confirm → mark `status='revoked'`
+   - Profiles stay on disk (grace period 24h)
+
+2. **Admin revoke** (dashboard)
+   - Admin see all users' licenses
+   - Button "Revoke" → mark revoked + notify user
+
+3. **Grace period handling**
+   - App: offline 7 days → readonly
+   - Post-revoke 24h → auto-delete profiles locally
+
+4. **Concurrent session check** (Electron app)
+   - heartbeat compare `sessionId` vs `active_session_id`
+   - If mismatch → auto-kickout + cloud upload
+
+---
+
+### 🎯 Chi tiết cho tiếp theo (Claude sẽ đọc)
+
+**Checkout flow cần làm:**
+- Create route `/app/checkout/upgrade/[licenseId]/page.tsx` (display QR)
+- Create route `/app/checkout/renewal/[licenseId]/page.tsx` (display QR)
+- Update modals: onClick → redirect thay vì fetch API
+- SePay webhook: khi payment ok → callback success page → redirect dashboard
+
+**Tier options cho upgrade:**
+- Current tier-6 → tier-10, tier-15, tier-25, tier-50, tier-100
+- Current tier-15 → tier-25, tier-50, tier-100
+- Current tier-25 → tier-50, tier-100
+- Current tier-1 (free) → tier-6, tier-10, etc
+- Không allow downgrade (tier-15 → tier-6)
+
+**Prorate logic (TBD):**
+- Option 1: Full price (current) — user pay full amount
+- Option 2: Prorate = (days_remaining / 30) * old_price, discount new_price
+- Recommend: Full price for simplicity
+
+---
+
 ## 0f. Thiết kế License Multi-Key + Renewal (2026-05-07 chiều — tổng hợp cho Claude)
 
 ### 📌 Nguyên tắc cốt lõi
