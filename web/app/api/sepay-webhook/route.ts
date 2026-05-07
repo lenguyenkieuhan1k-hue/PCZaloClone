@@ -289,8 +289,8 @@ export async function POST(req: NextRequest) {
     .from('users')
     .select('id, email, display_name')
   
-  if (usersErr || !allUsers) {
-    console.error(`[WEBHOOK-DEBUG] ERROR fetching users:`, usersErr)
+  if (usersErr) {
+    console.error(`[WEBHOOK-DEBUG] ERROR fetching users:`, JSON.stringify(usersErr))
     await upsertPaymentRow(admin, sepayTxnId, {
       amount_vnd: rawAmount,
       memo: memoText,
@@ -298,22 +298,40 @@ export async function POST(req: NextRequest) {
       tier_id: tier.id,
       duration: memo.duration,
     }, existing?.id)
-    return ok({ matched: true, accepted: false, reason: 'user-fetch-error' })
+    return ok({ matched: true, accepted: false, reason: 'user-fetch-error', error: usersErr })
+  }
+
+  console.error(`[WEBHOOK-DEBUG] Fetched ${allUsers?.length || 0} users from users table`)
+  if (!allUsers || allUsers.length === 0) {
+    console.error(`[WEBHOOK-DEBUG] WARNING: allUsers is empty or null. Users table may be empty or have permission issues.`)
+    // Try to get a sample user to debug
+    const { data: sampleUsers } = await admin.from('users').select('id').limit(1)
+    console.error(`[WEBHOOK-DEBUG] Sample query returned: ${sampleUsers?.length || 0} rows. Full response:`, JSON.stringify(sampleUsers || []))
+    
+    await upsertPaymentRow(admin, sepayTxnId, {
+      amount_vnd: rawAmount,
+      memo: memoText,
+      status: 'pending',
+      tier_id: tier.id,
+      duration: memo.duration,
+    }, existing?.id)
+    return ok({ matched: true, accepted: false, reason: 'user-not-found' })
   }
 
   // Match users by UUID prefix (first 8 chars of UUID, case-insensitive)
   const userMatch = allUsers.filter((u) => {
     const uuidStart = u.id.replace(/-/g, '').slice(0, 8).toLowerCase()
+    console.error(`[WEBHOOK-DEBUG] Comparing user ${u.id.slice(0, 13)}... (prefix: ${uuidStart}) vs memo userId: ${memo.userId}`)
     return uuidStart === memo.userId.toLowerCase()
   })
 
-  console.error(`[WEBHOOK-DEBUG] User lookup for prefix '${memo.userId}': scanning ${allUsers.length} users, found=${userMatch.length} matches`)
+  console.error(`[WEBHOOK-DEBUG] User lookup for prefix '${memo.userId}': found=${userMatch.length} matches out of ${allUsers.length} total users`)
   if (userMatch && userMatch.length > 0) {
     console.error(`[WEBHOOK-DEBUG] User match results:`, userMatch.map((u) => ({ id: u.id, email: u.email })))
   }
   
   if (!userMatch || userMatch.length === 0) {
-    console.error(`[WEBHOOK-DEBUG] USER NOT FOUND: no users match prefix '${memo.userId}'`)
+    console.error(`[WEBHOOK-DEBUG] USER NOT FOUND: no users match prefix '${memo.userId}' after scanning ${allUsers.length} users`)
     await upsertPaymentRow(admin, sepayTxnId, {
       amount_vnd: rawAmount,
       memo: memoText,
