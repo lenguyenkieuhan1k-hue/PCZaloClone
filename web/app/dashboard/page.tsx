@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import { getSessionUser } from '@/lib/auth-helpers'
 import { serverClient } from '@/lib/supabase'
 import { formatVnd, DURATION_LABEL, type Duration } from '@/lib/plans'
+import LicenseTable from './LicenseTable'
 
 export const metadata = { title: 'Tài khoản — ZaloMask' }
 
@@ -13,10 +14,23 @@ export default async function DashboardPage({ searchParams }: { searchParams: Da
   if (!user) redirect('/auth/sign-in')
 
   const supabase = serverClient(user.accessToken)
-  const { data: licenses } = await supabase
-    .from('licenses')
-    .select('id, key, tier_id, account_quota, duration, expires_at, status, active_session_id, active_device_name, created_at')
-    .order('created_at', { ascending: false })
+  
+  // Fetch licenses from new API to get profileCount
+  let licenses = []
+  try {
+    const res = await fetch(`${process.env.NEXTAUTH_URL || 'https://zalomask.com'}/api/licenses`, {
+      headers: {
+        'Cookie': `sb-access-token=${user.accessToken}`,
+      },
+      cache: 'no-store',
+    })
+    const data = await res.json()
+    if (data.ok) {
+      licenses = data.licenses || []
+    }
+  } catch (err) {
+    console.error('Failed to fetch licenses:', err)
+  }
 
   const { data: sessions } = await supabase
     .from('sessions')
@@ -57,40 +71,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Da
       )}
 
       <h2 className="text-xl font-semibold mt-10">License đã mua</h2>
-      {!licenses || licenses.length === 0 ? (
-        <div className="mt-4 p-8 border border-dashed rounded-xl">
-          <p className="text-gray-700 font-medium">Bạn chưa kích hoạt key trả phí.</p>
-          <p className="mt-2 text-sm text-gray-600">Hiện tại bạn vẫn dùng được theo gói miễn phí: tối đa 1 tài khoản Zalo.</p>
-          <div className="mt-4 flex flex-wrap gap-3">
-            <Link href="/api/claim-free" className="px-4 py-2 rounded-lg border border-green-300 bg-green-50 text-green-700 hover:bg-green-100">
-              Nhận key miễn phí
-            </Link>
-            <Link href="/pricing" className="px-4 py-2 rounded-lg border border-gray-300 hover:border-brand hover:text-brand">
-              Xem gói trả phí
-            </Link>
-          </div>
-        </div>
-      ) : (
-        <div className="mt-4 space-y-4">
-          {licenses.map(l => (
-            <div key={l.id} className="border border-gray-200 rounded-xl p-5 flex flex-wrap gap-4 items-start justify-between">
-              <div className="min-w-0">
-                <div className="font-mono text-lg">{l.key}</div>
-                <div className="mt-1 text-sm text-gray-500">
-                  {l.tier_id} • {l.account_quota} Zalo • {DURATION_LABEL[l.duration as Duration]} • Hết hạn: {new Date(l.expires_at).toLocaleDateString('vi-VN')}
-                </div>
-                <div className="mt-1 text-xs">
-                  Trạng thái: <span className={l.status === 'active' ? 'text-green-600' : 'text-red-600'}>{l.status}</span>
-                  {' • '}Active trên: <span className="text-gray-700">{l.active_device_name || (l.active_session_id ? 'thiết bị ẩn danh' : 'chưa có')}</span>
-                </div>
-              </div>
-              <span className="px-3 py-1.5 rounded-lg border text-sm text-gray-500">
-                Gia hạn (sắp có)
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      <LicenseTable licenses={licenses} />
 
       <h2 className="text-xl font-semibold mt-10">Thiết bị đang active</h2>
       {!sessions || sessions.length === 0 ? (
