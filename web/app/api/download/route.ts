@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 
 const GITHUB_OWNER = 'lenguyenkieuhan1k-hue'
 const GITHUB_REPO = 'PCZaloClone'
+export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {

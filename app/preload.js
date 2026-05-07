@@ -16,7 +16,11 @@ contextBridge.exposeInMainWorld('api', {
   importProfile: () => ipcRenderer.invoke('import-profile'),
   openProfilesFolder: () => ipcRenderer.invoke('open-profiles-folder'),
 
-  // Settings
+  // Per-profile privacy
+  getProfilePrivacy: (profileName) => ipcRenderer.invoke('get-profile-privacy', { profileName }),
+  setProfilePrivacy: (profileName, key, value) => ipcRenderer.invoke('set-profile-privacy', { profileName, key, value }),
+
+  // Settings (global defaults)
   getSettings: () => ipcRenderer.invoke('get-settings'),
   setSetting: (key, value) => ipcRenderer.invoke('set-setting', { key, value }),
   getSystemHealth: () => ipcRenderer.invoke('get-system-health'),

@@ -188,6 +188,7 @@ function renderProfiles() {
         <button class="acc-btn" data-act="check-proxy" data-name="${esc(p.profileName)}">Check</button>
         <button class="acc-btn" data-act="proxy" data-name="${esc(p.profileName)}">Proxy</button>
         <button class="acc-btn" data-act="export" data-name="${esc(p.profileName)}">Xuất</button>
+        <button class="acc-btn" data-act="privacy" data-name="${esc(p.profileName)}">Riêng tư</button>
         <button class="acc-btn" data-act="delete" data-name="${esc(p.profileName)}">Xóa</button>
       </div>
     </div>`
@@ -433,6 +434,11 @@ async function handleListAction(event) {
       if (rs?.message !== 'Đã huỷ') alert('Xuất profile thất bại: ' + (rs?.message || 'unknown'))
     }
     setStatus('Sẵn sàng')
+    return
+  }
+
+  if (act === 'privacy') {
+    await openPrivacyModal(profileName)
     return
   }
 
@@ -937,3 +943,71 @@ function bindLicenseKicked() {
 
 bindUpdate()
 bindLicenseKicked()
+
+/* ---------- Per-profile privacy modal ---------- */
+
+let _privacyTarget = null
+
+async function openPrivacyModal(profileName) {
+  _privacyTarget = profileName
+  const nameEl = $('privacyProfileName')
+  if (nameEl) nameEl.textContent = profileName
+  $('privacyOverlay').classList.remove('hidden')
+  ;['privHideTyping', 'privHideSeen', 'privHideReceived'].forEach((id) => {
+    const el = $(id)
+    if (el) { el.disabled = true; el.checked = false }
+  })
+  try {
+    const rs = await window.api.getProfilePrivacy(profileName)
+    if (!rs || !rs.ok) {
+      alert('Không lấy được cấu hình riêng tư: ' + ((rs && rs.message) || 'unknown'))
+      closePrivacyModal()
+      return
+    }
+    const p = rs.privacy || {}
+    ;[['privHideTyping', 'hideTyping'], ['privHideSeen', 'hideSeen'], ['privHideReceived', 'hideReceived']]
+      .forEach(([id, key]) => {
+        const el = $(id)
+        if (!el) return
+        el.disabled = false
+        el.checked = !!p[key]
+      })
+  } catch (err) {
+    alert('Lỗi: ' + (err && err.message ? err.message : 'unknown'))
+    closePrivacyModal()
+  }
+}
+
+function closePrivacyModal() {
+  $('privacyOverlay').classList.add('hidden')
+  _privacyTarget = null
+}
+
+async function handlePrivacyToggle(key, value) {
+  if (!_privacyTarget) return
+  const rs = await window.api.setProfilePrivacy(_privacyTarget, key, value)
+  if (!rs || !rs.ok) {
+    alert('Lưu thất bại: ' + ((rs && rs.message) || 'unknown'))
+    const idMap = { hideTyping: 'privHideTyping', hideSeen: 'privHideSeen', hideReceived: 'privHideReceived' }
+    const el = $(idMap[key])
+    if (el) el.checked = !value
+    return
+  }
+  setStatus(_privacyTarget + ': ' + key + ' = ' + (value ? 'ON' : 'OFF'))
+}
+
+function bindPrivacyModal() {
+  const close = $('privacyClose')
+  if (close) close.addEventListener('click', closePrivacyModal)
+  const done = $('privacyDone')
+  if (done) done.addEventListener('click', closePrivacyModal)
+  const overlay = $('privacyOverlay')
+  if (overlay) overlay.addEventListener('click', (e) => { if (e.target === overlay) closePrivacyModal() })
+  ;[['privHideTyping', 'hideTyping'], ['privHideSeen', 'hideSeen'], ['privHideReceived', 'hideReceived']]
+    .forEach(([id, key]) => {
+      const el = $(id)
+      if (el) el.addEventListener('change', () => handlePrivacyToggle(key, el.checked))
+    })
+}
+
+bindPrivacyModal()

@@ -43,33 +43,13 @@ export async function POST(req: NextRequest) {
     const price = tier.prices[duration]
     const durationDays = DURATION_DAYS[duration]
 
-    // Calculate new expiry (extend from current expiry, not from today)
+    // Preview expiry for UI only. Actual expires_at is updated in webhook
+    // after payment status changes to paid.
     const currentExpires = new Date(license.expires_at)
     const newExpires = new Date(currentExpires)
     newExpires.setDate(newExpires.getDate() + durationDays)
 
-    // Update license expiry
     const admin = adminClient()
-    const { error: updateError } = await admin
-      .from('licenses')
-      .update({ expires_at: newExpires.toISOString() })
-      .eq('id', license_id)
-
-    if (updateError) {
-      return NextResponse.json({ ok: false, message: 'Failed to renew license' }, { status: 500 })
-    }
-
-    // Record renewal in license_upgrades table
-    await admin.from('license_upgrades').insert({
-      user_id: user.id,
-      old_license_id: license_id,
-      new_license_id: license_id,
-      old_tier_id: license.tier_id,
-      new_tier_id: license.tier_id,
-      upgrade_type: 'renewal',
-      transfer_profile_count: 0,
-      transfer_status: 'completed',
-    })
 
     // Create payment record
     const { data: payment } = await admin

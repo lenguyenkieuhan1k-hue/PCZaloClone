@@ -27,6 +27,41 @@ const LICENSE_STATE_PATH = path.join(ROOT_DIR, 'license-state.json')
 const APP_VERSION = safeReadJson(path.join(__dirname, 'package.json'), {})?.version || '0.0.0'
 
 const webWindows = new Map()
+const privacyMutators = new Map()
+
+// Per-profile privacy: toggle Zalo Web "đang soạn / đã xem / đã nhận" feature on/off
+// at the network layer. When a flag is on we drop the corresponding HTTP request
+// before it leaves the renderer — Zalo client just sees the call as failed and
+// moves on, and the server never receives the typing/seen/delivered signal.
+//
+// URL substring patterns (exact path match), case-insensitive. Adding new
+// patterns here is safe — drop in any URL fragment Zalo adds in future builds.
+const PRIVACY_URL_PATTERNS = {
+  hideTyping:   ['/api/message/typing', '/api/group/typing'],
+  hideSeen:     ['/api/message/seen', '/api/group/seen', '/api/message/seenv2', '/api/group/seenv2'],
+  hideReceived: ['/api/message/delivered', '/api/group/delivered', '/api/message/deliveredv2', '/api/group/deliveredv2'],
+}
+
+function normalizeProfilePrivacy(input) {
+  const src = input && typeof input === 'object' ? input : {}
+  return {
+    hideTyping: !!src.hideTyping,
+    hideSeen: !!src.hideSeen,
+    hideReceived: !!src.hideReceived,
+  }
+}
+
+function shouldBlockPrivacyUrl(url, privacy) {
+  if (!url || !privacy) return false
+  const lower = String(url).toLowerCase()
+  for (const flag of Object.keys(PRIVACY_URL_PATTERNS)) {
+    if (!privacy[flag]) continue
+    for (const pattern of PRIVACY_URL_PATTERNS[flag]) {
+      if (lower.includes(pattern)) return { flag, pattern }
+    }
+  }
+  return false
+}
 const cookieSaveTimers = new Map()
 const localStorageSeedCache = new Map()
 let licenseHeartbeatTimer = null
@@ -896,7 +931,7 @@ async function collectExportAccount(profileName) {
   if (!meta) return null
   meta.fingerprint = normalizeFingerprint(meta.fingerprint || {})
 
-  const ses = session.fromPartition(partitionFor(profileName))
+  const ses = session.fromPartition(partitionFor(profileName, meta.license_id || ''))
   const liveCookies = await getZaloCookies(ses)
   if (liveCookies.length > 0) {
     meta.webSession = meta.webSession || {}
@@ -1026,6 +1061,27 @@ async function openWebProfile(profileName) {
     }
   }
 
+  // -- Per-profile privacy filter --------------------------------------------
+  // session.webRequest is global per-partition; setting onBeforeRequest with a
+  // null listener clears it. We re-register with the latest privacy meta every
+  // time the profile is opened, and again whenever set-profile-privacy IPC
+  // fires for an open profile. The listener reads `currentPrivacy` from the
+  // closure so a flag flip propagates without re-attaching anything.
+  let currentPrivacy = normalizeProfilePrivacy(meta.privacy)
+  ses.webRequest.onBeforeRequest({ urls: ['*://*.zalo.me/*', '*://*.zaloapp.com/*'] }, (details, callback) => {
+    const hit = shouldBlockPrivacyUrl(details.url, currentPrivacy)
+    if (hit) {
+      // Cancel in-flight request. Zalo client treats it as a network blip,
+      // recipient never sees the typing/seen/delivered signal.
+      callback({ cancel: true })
+      return
+    }
+    callback({ cancel: false })
+  })
+  // Stash the setter on webWindows entry so set-profile-privacy IPC can mutate
+  // currentPrivacy without re-creating the BrowserWindow.
+  privacyMutators.set(profileName, (next) => { currentPrivacy = normalizeProfilePrivacy(next) })
+
   const profileArg = `--zalomask-profile=${profileName}`
   const zUuidArg = `--zalomask-zuuid=${webSession.zUuid || ''}`
 
@@ -1070,6 +1126,7 @@ async function openWebProfile(profileName) {
 
   win.on('closed', () => {
     webWindows.delete(profileName)
+    privacyMutators.delete(profileName)
     localStorageSeedCache.delete(profileName)
     ses.cookies.removeListener('changed', cookieChangedHandler)
     const t = cookieSaveTimers.get(profileName)
@@ -1424,7 +1481,7 @@ ipcMain.handle('update-proxy', async (_event, payload) => {
   meta.proxy = normalizeProxy(payload?.proxy || {})
   saveProfileMeta(profileName, meta)
 
-  const ses = session.fromPartition(partitionFor(profileName))
+  const ses = session.fromPartition(partitionFor(profileName, meta.license_id || ''))
   try {
     await ses.setProxy(buildSessionProxyConfig(meta.proxy))
   } catch (_) {
@@ -1432,6 +1489,31 @@ ipcMain.handle('update-proxy', async (_event, payload) => {
   }
 
   return { ok: true, proxy: meta.proxy }
+})
+
+ipcMain.handle('get-profile-privacy', async (_event, payload) => {
+  const profileName = String(payload?.profileName || '').trim()
+  if (!profileName) return { ok: false, message: 'Thiếu profileName' }
+  const meta = loadProfileMeta(profileName)
+  if (!meta) return { ok: false, message: 'Không tìm thấy profile' }
+  return { ok: true, privacy: normalizeProfilePrivacy(meta.privacy) }
+})
+
+ipcMain.handle('set-profile-privacy', async (_event, payload) => {
+  const profileName = String(payload?.profileName || '').trim()
+  if (!profileName) return { ok: false, message: 'Thiếu profileName' }
+  const meta = loadProfileMeta(profileName)
+  if (!meta) return { ok: false, message: 'Không tìm thấy profile' }
+  const allowed = ['hideTyping', 'hideSeen', 'hideReceived']
+  const key = String(payload?.key || '').trim()
+  if (!allowed.includes(key)) return { ok: false, message: 'Key không hợp lệ' }
+  meta.privacy = normalizeProfilePrivacy(meta.privacy)
+  meta.privacy[key] = !!payload?.value
+  saveProfileMeta(profileName, meta)
+  // Live-apply for an already-open profile (no need to close + reopen window).
+  const mutator = privacyMutators.get(profileName)
+  if (mutator) mutator(meta.privacy)
+  return { ok: true, privacy: meta.privacy, applied: !!mutator }
 })
 
 ipcMain.handle('check-proxy', async (_event, payload) => {
@@ -1562,7 +1644,7 @@ ipcMain.handle('import-profile', async () => {
 
       saveProfileMeta(profileName, meta)
 
-      const ses = session.fromPartition(partitionFor(profileName))
+      const ses = session.fromPartition(partitionFor(profileName, meta.license_id || ''))
       await ses.clearStorageData()
       await seedCookiesForSession(ses, normalized.cookies || [])
       imported.push({ profileName, displayName: meta.displayName })
@@ -1656,7 +1738,7 @@ ipcMain.handle('cloud-sync-download', async () => {
         : (Array.isArray(meta?.webSession?.cookies) ? meta.webSession.cookies : [])
       if (cookies.length > 0) {
         try {
-          const ses = session.fromPartition(partitionFor(name))
+          const ses = session.fromPartition(partitionFor(name, meta.license_id || ''))
           await ses.clearStorageData({ storages: ['cookies'] }).catch(() => {})
           await seedCookiesForSession(ses, cookies)
         } catch (err) {

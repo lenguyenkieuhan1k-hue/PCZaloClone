@@ -311,8 +311,6 @@
     </div>
   </div>
 
-  <script src="renderer-v2.js"></script>
-
   <!-- Update overlay -->
   <div class="modal-overlay hidden" id="updateOverlay">
     <div class="modal" style="max-width:480px">
@@ -355,6 +353,60 @@
       </div>
     </div>
   </div>
+
+
+  <!-- Privacy per-profile overlay -->
+  <div class="modal-overlay hidden" id="privacyOverlay">
+    <div class="modal" style="max-width:440px">
+      <div class="modal-header">
+        <span class="modal-title">Riêng tư cho profile <span id="privacyProfileName" style="color:#1566FF"></span></span>
+        <button class="modal-close" id="privacyClose">&#215;</button>
+      </div>
+      <div class="modal-body" style="padding:16px">
+        <p style="font-size:12px;color:#666;margin:0 0 14px">Mỗi profile có cài đặt riêng. Tắt/bật ở đây không ảnh hưởng profile khác.</p>
+
+        <div class="settings-row" style="padding:10px 0;border-bottom:1px solid #eee">
+          <div class="settings-row-info">
+            <span class="settings-row-label">💬 Ẩn trạng thái Đang soạn tin</span>
+            <span class="settings-row-sub">Người chat không thấy bạn đang gõ</span>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="privHideTyping" class="toggle-input" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="settings-row" style="padding:10px 0;border-bottom:1px solid #eee">
+          <div class="settings-row-info">
+            <span class="settings-row-label">👁 Ẩn trạng thái Đã xem</span>
+            <span class="settings-row-sub">Đọc tin mà người gửi không biết</span>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="privHideSeen" class="toggle-input" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="settings-row" style="padding:10px 0">
+          <div class="settings-row-info">
+            <span class="settings-row-label">📥 Ẩn trạng thái Đã nhận</span>
+            <span class="settings-row-sub">Người gửi không biết tin đến máy bạn</span>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="privHideReceived" class="toggle-input" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <p id="privacyApplyHint" style="font-size:11px;color:#999;margin:14px 0 0">Thay đổi áp dụng ngay nếu profile đang mở; không cần khởi động lại.</p>
+      </div>
+      <div class="modal-footer" style="gap:8px;justify-content:flex-end">
+        <button class="tool-card primary" id="privacyDone">Xong</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer-v2.js"></script>
 
 </body>
 </html>
