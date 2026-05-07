@@ -43,6 +43,20 @@ function parseMemo(memo: string): { userId: string; tierId: string; duration: Du
   const match = cleaned.match(/ZM[ \-]?([A-F0-9]{8})[ \-]?(TIER[A-Z0-9\-]+)[ \-]?(1M|3M|6M|1Y)/)
   if (!match) return null
   let tierId = match[2].toLowerCase()
+  
+  // Replace any remaining spaces with dashes (SePay might send "TIER TEST 1K" instead of "TIER-TEST-1K")
+  tierId = tierId.replace(/\s+/g, '-')
+  
+  // Insert dashes before digit sequences if preceded by letters (tiertest1k → tiertest-1k)
+  tierId = tierId.replace(/([a-z])(\d)/g, '$1-$2')
+  
+  // If tier ID is malformed (e.g., tiertest1k without proper dashes), split it:
+  // tiertest1k → tier-test-1k by extracting trailing number and middle part
+  const tierSegmentMatch = tierId.match(/^tier(.+?)(\d+.*)$/)
+  if (tierSegmentMatch) {
+    tierId = `tier-${tierSegmentMatch[1]}-${tierSegmentMatch[2]}`
+  }
+  
   // Backward-compat: TIER6 -> tier-6
   if (/^tier\d/.test(tierId)) {
     tierId = tierId.replace(/^tier(\d)/, 'tier-$1')
@@ -51,6 +65,9 @@ function parseMemo(memo: string): { userId: string; tierId: string; duration: Du
   if (!tierId.startsWith('tier-') && tierId.startsWith('tier')) {
     tierId = `tier-${tierId.slice(4).replace(/^-+/, '')}`
   }
+  // Clean up multiple consecutive dashes
+  tierId = tierId.replace(/\-+/g, '-')
+  
   return { userId: match[1].toLowerCase(), tierId, duration: match[3].toLowerCase() as Duration }
 }
 
