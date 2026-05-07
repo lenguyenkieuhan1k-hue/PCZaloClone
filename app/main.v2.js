@@ -167,6 +167,18 @@ async function postJson(url, payload) {
   }
 }
 
+async function getJson(url) {
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), 12000)
+  try {
+    const rs = await fetch(url, { method: 'GET', signal: controller.signal })
+    const json = await rs.json().catch(() => ({}))
+    return { ok: rs.ok, status: rs.status, body: json }
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 function broadcastLicenseStatus() {
   const state = readLicenseState() || {}
   mainWindow?.webContents.send('license-updated', state)
@@ -199,15 +211,27 @@ async function runHeartbeatOnce() {
     state.lastHeartbeatAt = new Date().toISOString()
     saveLicenseState(state)
 
-    // Notify renderer FIRST so user sees a dialog before web windows disappear.
     const message = status === 'kicked'
       ? 'License đang được dùng ở máy khác. App đã tự đóng để tránh xung đột.'
       : 'License của bạn đã hết hạn. Vui lòng gia hạn để tiếp tục dùng.'
+
+    // Khi bị kicked: tự động upload cloud rồi xóa profile local.
+    if (status === 'kicked') {
+      try {
+        const uploadRs = await runCloudUpload({ silent: true })
+        logRuntime('cloud-auto-upload-on-kick', { ok: uploadRs?.ok, profiles: uploadRs?.profileCount })
+      } catch (err) {
+        logRuntime('cloud-auto-upload-on-kick-error', { message: err?.message })
+      }
+      try { wipeAllLocalProfiles() } catch (err) {
+        logRuntime('cloud-auto-wipe-error', { message: err?.message })
+      }
+    }
+
     try {
       mainWindow?.webContents.send('license-kicked', { status, message, state })
     } catch (_) {}
 
-    // Give renderer ~600ms to render the dialog before closing web windows.
     setTimeout(() => {
       for (const win of webWindows.values()) {
         try { if (win && !win.isDestroyed()) win.close() } catch (_) {}
@@ -1350,6 +1374,93 @@ ipcMain.handle('import-profile', async () => {
     }
   } catch (error) {
     return { ok: false, message: error?.message || 'Không nhập được profile' }
+  }
+})
+
+// ---------- Cloud sync helpers ----------
+
+async function runCloudUpload({ silent = false } = {}) {
+  const state = readLicenseState()
+  if (!state?.sessionId || state.status !== 'active') {
+    return { ok: false, message: 'Chưa kích hoạt license hoặc session không active.' }
+  }
+  const { baseUrl } = getLicenseConfig()
+  ensureDir(PROFILES_DIR)
+  const names = fs.readdirSync(PROFILES_DIR, { withFileTypes: true })
+    .filter((d) => d.isDirectory()).map((d) => d.name)
+  const profiles = names.map((n) => safeReadJson(profileMetaPath(n), null)).filter(Boolean)
+
+  try {
+    const rs = await postJson(`${baseUrl}/api/cloud-sync/upload`, {
+      sessionId: state.sessionId,
+      profiles,
+    })
+    if (!silent) logRuntime('cloud-upload', { ok: rs?.body?.ok, count: profiles.length })
+    return { ok: rs?.body?.ok === true, profileCount: profiles.length, message: rs?.body?.message }
+  } catch (err) {
+    return { ok: false, message: err?.message || 'Upload thất bại' }
+  }
+}
+
+function wipeAllLocalProfiles() {
+  ensureDir(PROFILES_DIR)
+  const names = fs.readdirSync(PROFILES_DIR, { withFileTypes: true })
+    .filter((d) => d.isDirectory()).map((d) => d.name)
+  for (const name of names) {
+    try { fs.rmSync(path.join(PROFILES_DIR, name), { recursive: true, force: true }) } catch (_) {}
+  }
+  logRuntime('cloud-wipe-local-profiles', { count: names.length })
+}
+
+// IPC: cloud-sync-upload (thủ công từ UI)
+ipcMain.handle('cloud-sync-upload', async () => {
+  return runCloudUpload()
+})
+
+// IPC: cloud-sync-download (máy B tải về)
+ipcMain.handle('cloud-sync-download', async () => {
+  const state = readLicenseState()
+  if (!state?.sessionId || state.status !== 'active') {
+    return { ok: false, message: 'Chưa kích hoạt license hoặc session không active.' }
+  }
+  const { baseUrl } = getLicenseConfig()
+  try {
+    const rs = await getJson(`${baseUrl}/api/cloud-sync/download?sessionId=${encodeURIComponent(state.sessionId)}`)
+    if (!rs?.body?.ok) return { ok: false, message: rs?.body?.message || 'Download thất bại' }
+
+    const profiles = Array.isArray(rs.body.profiles) ? rs.body.profiles : []
+    ensureDir(PROFILES_DIR)
+    let imported = 0
+    for (const meta of profiles) {
+      const name = meta.profileName
+      if (!name) continue
+      const dir = path.join(PROFILES_DIR, name)
+      ensureDir(dir)
+      writeJson(path.join(dir, 'meta.json'), { ...meta, updatedAt: new Date().toISOString() })
+      imported++
+    }
+    logRuntime('cloud-download', { imported, uploadedAt: rs.body.uploadedAt })
+    mainWindow?.webContents.send('profiles-reloaded')
+    return { ok: true, imported, uploadedAt: rs.body.uploadedAt }
+  } catch (err) {
+    return { ok: false, message: err?.message || 'Download thất bại' }
+  }
+})
+
+// IPC: cloud-sync-status (kiểm tra có backup chưa)
+ipcMain.handle('cloud-sync-status', async () => {
+  const state = readLicenseState()
+  if (!state?.sessionId || state.status !== 'active') {
+    return { ok: false, hasBackup: false, message: 'Chưa kích hoạt license.' }
+  }
+  const { baseUrl } = getLicenseConfig()
+  try {
+    const rs = await getJson(`${baseUrl}/api/cloud-sync/download?sessionId=${encodeURIComponent(state.sessionId)}`)
+    if (!rs?.body?.ok) return { ok: false, hasBackup: false }
+    const count = rs.body.profileCount || 0
+    return { ok: true, hasBackup: count > 0, profileCount: count, uploadedAt: rs.body.uploadedAt }
+  } catch (err) {
+    return { ok: false, hasBackup: false, message: err?.message }
   }
 })
 

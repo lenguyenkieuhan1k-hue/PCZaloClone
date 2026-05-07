@@ -150,7 +150,7 @@ function initials(name) {
 function switchTab(tab) {
   document.querySelectorAll('.main-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab))
   document.querySelectorAll('.tab-panel').forEach((p) => p.classList.toggle('active', p.id === `tab-${tab}`))
-  if (tab === 'cloud') renderCloud()
+  if (tab === 'cloud') refreshCloudStatus().catch(() => {})
 }
 
 async function refresh() {
@@ -162,7 +162,6 @@ async function refresh() {
   }
   profiles = rs.profiles || []
   renderProfiles()
-  renderCloud()
   setStatus(`Đã tải ${profiles.length} profile`)
 }
 
@@ -196,16 +195,64 @@ function renderProfiles() {
 }
 
 function renderCloud() {
-  const box = $('cloudList')
-  if (!box) return
-  if (!profiles.length) {
-    box.innerHTML = '<div class="empty-state">Chưa có snapshot nào.</div>'
-    return
+  // Tab cloud: chỉ hiển thị trạng thái dựa trên cloudSyncStatus
+}
+
+async function refreshCloudStatus() {
+  const el = $('cloudStatusText')
+  if (el) el.textContent = 'Đang kiểm tra…'
+  try {
+    const rs = await window.api.cloudSyncStatus()
+    if (!rs.ok) {
+      if (el) el.textContent = rs.message || 'Chưa kích hoạt license.'
+    } else if (rs.hasBackup) {
+      const d = rs.uploadedAt ? new Date(rs.uploadedAt).toLocaleString('vi-VN') : '?'
+      if (el) el.textContent = `Có backup ${rs.profileCount} profile — cập nhật lúc ${d}`
+    } else {
+      if (el) el.textContent = 'Chưa có backup nào trên cloud.'
+    }
+  } catch (err) {
+    if (el) el.textContent = 'Lỗi: ' + (err?.message || 'unknown')
   }
-  box.innerHTML = profiles.map((p) => `<div class="cloud-row">
-      <div class="cloud-row-title">${esc(p.displayName)}</div>
-      <div class="cloud-row-sub">Cookies: ${Number(p.cookieCount || 0)} • Storage keys: ${Number(p.localStorageCount || 0)}</div>
-    </div>`).join('')
+}
+
+async function handleCloudUpload() {
+  const btn = $('btnCloudUpload')
+  if (btn) { btn.disabled = true; btn.textContent = 'Đang tải lên…' }
+  setStatus('Đang upload profiles lên cloud…')
+  try {
+    const rs = await window.api.cloudSyncUpload()
+    if (rs.ok) {
+      setStatus(`Đã upload ${rs.profileCount} profile lên cloud.`)
+    } else {
+      setStatus('Lỗi upload: ' + (rs.message || 'unknown'))
+    }
+    await refreshCloudStatus()
+  } catch (err) {
+    setStatus('Lỗi: ' + (err?.message || 'unknown'))
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Tải lên' }
+  }
+}
+
+async function handleCloudDownload() {
+  const btn = $('btnCloudDownload')
+  if (btn) { btn.disabled = true; btn.textContent = 'Đang đồng bộ…' }
+  setStatus('Đang tải profiles từ cloud về…')
+  try {
+    const rs = await window.api.cloudSyncDownload()
+    if (rs.ok) {
+      setStatus(`Đã đồng bộ ${rs.imported} profile về máy này.`)
+      await refresh()
+    } else {
+      setStatus('Lỗi download: ' + (rs.message || 'unknown'))
+    }
+    await refreshCloudStatus()
+  } catch (err) {
+    setStatus('Lỗi: ' + (err?.message || 'unknown'))
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Đồng bộ về' }
+  }
 }
 
 function openAddModal() {
@@ -655,7 +702,9 @@ function bind() {
   })
   $('toolImport').addEventListener('click', handleImport)
   $('toolExport').addEventListener('click', openBackupModal)
-  $('btnCloudRefresh').addEventListener('click', () => refresh())
+  $('btnCloudRefresh').addEventListener('click', () => refreshCloudStatus().catch(() => {}))
+  $('btnCloudUpload').addEventListener('click', () => handleCloudUpload().catch(() => {}))
+  $('btnCloudDownload').addEventListener('click', () => handleCloudDownload().catch(() => {}))
   $('btnHealthRefresh').addEventListener('click', () => refreshHealth())
   $('accountList').addEventListener('click', handleListAction)
 
@@ -713,6 +762,10 @@ function bind() {
 
   if (typeof window.api.onProfileUpdated === 'function') {
     window.api.onProfileUpdated(() => { refresh().catch(() => {}) })
+  }
+
+  if (typeof window.api.onProfilesReloaded === 'function') {
+    window.api.onProfilesReloaded(() => { refresh().catch(() => {}) })
   }
 
   if (typeof window.api.onLicenseUpdated === 'function') {
@@ -815,10 +868,14 @@ function bindLicenseKicked() {
   if (typeof window.api.onLicenseKicked === 'function') {
     window.api.onLicenseKicked((info) => {
       const msg = (info && info.message) || 'License đã bị thu hồi.'
+      const sub = info?.status === 'kicked'
+        ? 'Profiles của bạn đã được tự động sao lưu lên cloud. Đăng nhập lại trên máy kia và chọn "Đồng bộ về" để lấy dữ liệu.'
+        : ''
       const target = $('licenseKickedMessage')
-      if (target) target.textContent = msg
+      if (target) target.textContent = msg + (sub ? '\n' + sub : '')
       if (overlay) overlay.classList.remove('hidden')
       refreshLicenseStatus().catch(() => {})
+      refreshCloudStatus().catch(() => {})
     })
   }
 }

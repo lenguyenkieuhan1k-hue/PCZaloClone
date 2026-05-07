@@ -64,19 +64,36 @@
   <section class="tab-panel" id="tab-cloud">
     <div class="settings-page">
       <div class="settings-section">
-        <p class="settings-section-title">Trạng thái dịch vụ</p>
+        <p class="settings-section-title">Sao lưu &amp; đồng bộ đám mây</p>
         <div class="settings-row">
           <div class="settings-row-info">
-            <span class="settings-row-label">Cloud backend</span>
-            <span class="settings-row-sub">Web local session mode đang hoạt động ổn định.</span>
+            <span class="settings-row-label">Trạng thái backup</span>
+            <span class="settings-row-sub" id="cloudStatusText">Đang kiểm tra…</span>
           </div>
           <button class="acc-btn" id="btnCloudRefresh">Làm mới</button>
         </div>
       </div>
 
-      <div class="settings-section" style="flex:1">
-        <p class="settings-section-title">Snapshot session theo profile</p>
-        <div class="cloud-list" id="cloudList"></div>
+      <div class="settings-section">
+        <p class="settings-section-title">Tải lên đám mây</p>
+        <div class="settings-row">
+          <div class="settings-row-info">
+            <span class="settings-row-label">&#x2601; Upload tất cả profiles lên server</span>
+            <span class="settings-row-sub">Dùng trước khi đăng nhập trên máy mới. Yêu cầu license active.</span>
+          </div>
+          <button class="btn-primary" id="btnCloudUpload">Tải lên</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <p class="settings-section-title">Đồng bộ về máy này</p>
+        <div class="settings-row">
+          <div class="settings-row-info">
+            <span class="settings-row-label">&#x2B07; Tải profiles từ cloud về máy này</span>
+            <span class="settings-row-sub">Dùng sau khi kích hoạt key trên máy mới. Sẽ ghi đè/thêm profiles cùng tên.</span>
+          </div>
+          <button class="btn-primary" id="btnCloudDownload">Đồng bộ về</button>
+        </div>
       </div>
     </div>
   </section>

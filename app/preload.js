@@ -43,9 +43,17 @@ contextBridge.exposeInMainWorld('api', {
   closeWindow: () => ipcRenderer.send('close-window'),
   minimizeWindow: () => ipcRenderer.send('minimize-window'),
 
+  // Cloud sync
+  cloudSyncUpload: () => ipcRenderer.invoke('cloud-sync-upload'),
+  cloudSyncDownload: () => ipcRenderer.invoke('cloud-sync-download'),
+  cloudSyncStatus: () => ipcRenderer.invoke('cloud-sync-status'),
+
   // Events
   onProfileUpdated: (cb) => {
     ipcRenderer.on('profile-updated', (_, profileName) => cb(profileName))
+  },
+  onProfilesReloaded: (cb) => {
+    ipcRenderer.on('profiles-reloaded', (_) => cb())
   },
   onLicenseUpdated: (cb) => {
     ipcRenderer.on('license-updated', (_, state) => cb(state))
