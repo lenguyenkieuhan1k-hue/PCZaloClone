@@ -595,6 +595,59 @@ function licenseStatusLabel(status) {
   return 'Chưa kích hoạt'
 }
 
+function formatLicenseDate(iso) {
+  if (!iso) return '--/--/----'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return String(iso)
+  return d.toLocaleDateString('vi-VN')
+}
+
+function renderHeaderLicenseBadge(state, runtime) {
+  const box = $('appLicenseBadge')
+  const title = $('appLicenseBadgeTitle')
+  const sub = $('appLicenseBadgeSub')
+  if (!box || !title || !sub) return
+
+  const st = state || {}
+  const rt = runtime || {}
+  const status = String(st.status || '').toLowerCase()
+  const isFree = String(rt.quotaSource || '') === 'free'
+
+  box.classList.remove('is-active', 'is-free', 'is-expired', 'is-kicked', 'is-unknown')
+
+  if (status === 'active' && !isFree) {
+    box.classList.add('is-active')
+    title.textContent = 'LICENSE ACTIVE'
+    sub.textContent = `Hết hạn: ${formatLicenseDate(st.licenseExpiresAt)}`
+    return
+  }
+
+  if (status === 'expired') {
+    box.classList.add('is-expired')
+    title.textContent = 'LICENSE EXPIRED'
+    sub.textContent = `Hết hạn: ${formatLicenseDate(st.licenseExpiresAt)}`
+    return
+  }
+
+  if (status === 'kicked') {
+    box.classList.add('is-kicked')
+    title.textContent = 'KICKED'
+    sub.textContent = 'Đăng nhập ở máy khác'
+    return
+  }
+
+  if (isFree || !status) {
+    box.classList.add('is-free')
+    title.textContent = 'FREE'
+    sub.textContent = 'Quota: 1 profile'
+    return
+  }
+
+  box.classList.add('is-unknown')
+  title.textContent = 'LICENSE'
+  sub.textContent = `Trạng thái: ${licenseStatusLabel(st.status)}`
+}
+
 function renderLicenseState(state, runtime) {
   const st = state || {}
   const rt = runtime || {}
@@ -610,12 +663,14 @@ function renderLicenseState(state, runtime) {
     `Heartbeat gần nhất: ${st.lastHeartbeatAt || '-'}`,
   ]
   $('licenseSummary').textContent = summary.join(' • ')
+  renderHeaderLicenseBadge(st, rt)
 }
 
 async function refreshLicenseStatus() {
   const rs = await window.api.getLicenseStatus()
   if (!rs || !rs.ok) {
     $('licenseSummary').textContent = 'Không lấy được trạng thái license.'
+    renderHeaderLicenseBadge({}, {})
     return
   }
   renderLicenseState(rs.state || {}, rs)

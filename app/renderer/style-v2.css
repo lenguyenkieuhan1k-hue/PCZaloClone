@@ -64,13 +64,53 @@ body {
 }
 .app-logo p { font-size: 11px; color: #888; }
 
-.badge {
-  background: #ff9900;
-  color: #fff;
+.license-pill {
+  min-width: 172px;
+  border-radius: 11px;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.2;
+  border: 1px solid transparent;
+  box-shadow: 0 8px 18px rgba(20, 26, 38, 0.09);
+}
+
+.license-pill-title {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.25px;
+}
+
+.license-pill-sub {
   font-size: 10px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 4px;
+  opacity: 0.9;
+  margin-top: 2px;
+}
+
+.license-pill.is-active {
+  background: linear-gradient(135deg, #1a8f4a, #22b35f);
+  color: #fff;
+  border-color: #168244;
+}
+
+.license-pill.is-free {
+  background: linear-gradient(135deg, #ff9800, #ffb642);
+  color: #fff;
+  border-color: #e58a00;
+}
+
+.license-pill.is-expired,
+.license-pill.is-kicked {
+  background: linear-gradient(135deg, #cf2f45, #e2556a);
+  color: #fff;
+  border-color: #b8293e;
+}
+
+.license-pill.is-unknown {
+  background: linear-gradient(135deg, #5f6b85, #7786a7);
+  color: #fff;
+  border-color: #55627d;
 }
 
 .main-tabs {
