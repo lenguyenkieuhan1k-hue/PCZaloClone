@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getServerClient, adminClient } from '@/lib/supabase'
+import { serverClient, adminClient } from '@/lib/supabase'
 import { PLAN_TIERS, DURATION_DAYS, type Duration } from '@/lib/plans'
-import { v4 as uuidv4 } from 'uuid'
+// uuidv4 stub — node:crypto built-in (no extra dep needed)
+import { randomUUID as uuidv4 } from 'node:crypto'
 
 interface UpgradeRequest {
   licenseid: string
@@ -10,7 +11,7 @@ interface UpgradeRequest {
 }
 
 export async function POST(req: NextRequest) {
-  const client = getServerClient()
+  const client = serverClient()
 
   try {
     const { data: { user }, error: authError } = await client.auth.getUser()

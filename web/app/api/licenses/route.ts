@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getServerClient } from '@/lib/supabase'
+import { serverClient } from '@/lib/supabase'
 
 export async function GET(req: NextRequest) {
-  const client = getServerClient()
+  const client = serverClient()
 
   try {
     const { data: { user }, error: authError } = await client.auth.getUser()
@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
     // Calculate total active quota
     const totalQuota = licensesWithProfileCount
       .filter((l) => l.status === 'active' && new Date(l.expires_at) > new Date())
-      .reduce((sum, l) => sum + l.account_quota, 0)
+      .reduce((sum: number, l: any) => sum + l.account_quota, 0)
 
     return NextResponse.json({
       ok: true,

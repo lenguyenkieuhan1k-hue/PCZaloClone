@@ -32,9 +32,41 @@ const localStorageSeedCache = new Map()
 let licenseHeartbeatTimer = null
 
 // Multi-key license cache: { license_id → { key, tier_id, account_quota, expires_at, status, active_session_id } }
-// Updated periodically from web API
+// Updated periodically from web API.
+//
+// TTL note: heartbeat (30s) is the primary refresh trigger when online.
+// LICENSE_CACHE_TTL_MS is the staleness ceiling when heartbeat is silent
+// (offline / sleeping laptop / VPN dropping). When stale, getEffectiveProfileQuota
+// fires a background sync but still serves the cached value so quota
+// calculations don't block the UI.
+const LICENSE_CACHE_TTL_MS = 60 * 60 * 1000  // 1 giờ
 const activeLicensesCache = new Map()
 let licensesCachedAt = 0
+let bgSyncInFlight = false
+
+function isLicenseCacheStale() {
+  if (!licensesCachedAt) return true
+  return (Date.now() - licensesCachedAt) > LICENSE_CACHE_TTL_MS
+}
+
+// Fire-and-forget cache refresh. Safe to call repeatedly; dedupes via
+// bgSyncInFlight so we don't pile up on slow networks.
+function triggerBackgroundLicenseSync(reason) {
+  if (bgSyncInFlight) return
+  const state = readLicenseState()
+  if (!state?.key) return  // not activated, nothing to sync
+  bgSyncInFlight = true
+  syncLicensesFromWeb()
+    .then((rs) => {
+      logRuntime('license-bg-sync', { reason, ok: !!rs?.ok, message: rs?.message })
+    })
+    .catch((err) => {
+      logRuntime('license-bg-sync-error', { reason, message: err?.message })
+    })
+    .finally(() => {
+      bgSyncInFlight = false
+    })
+}
 
 // Some Windows machines crash Electron renderers/GPU processes when loading Zalo Web.
 app.disableHardwareAcceleration()
@@ -141,6 +173,11 @@ function getEffectiveProfileQuota() {
   let totalQuota = 0
   let source = 'free'
 
+  // Cache too old? Kick off a background refresh — never block the caller.
+  if (isLicenseCacheStale()) {
+    triggerBackgroundLicenseSync('quota-stale')
+  }
+
   // Check if we have active licenses cached
   if (activeLicensesCache.size > 0) {
     let hasActive = false
@@ -212,7 +249,7 @@ async function syncLicensesFromWeb() {
   if (!state?.key) return { ok: false, message: 'Chưa có license key' }
 
   const { baseUrl } = getLicenseConfig()
-  const rs = await getJson(`${baseUrl}/api/electron/licenses?key=${encodeURIComponent(state.key)}`)
+  const rs = await postJson(`${baseUrl}/api/electron/licenses`, { key: state.key })
 
   if (!rs.ok || !rs.body?.ok) {
     logRuntime('license-sync-failed', { status: rs.status, message: rs.body?.message })
@@ -736,12 +773,19 @@ async function seedCookiesForSession(ses, cookies) {
   }
 }
 
+// Allow-list of cookie domains we transfer between machines. Anything outside
+// this list is dropped to keep export payloads small + avoid leaking unrelated
+// cookies (e.g. Google Analytics from .google.com that landed in this partition
+// because of OAuth redirects).
+const ZALO_COOKIE_DOMAIN_ALLOWLIST = ['zalo.me', 'zaloapp.com', 'zadn.vn']
+function isZaloCookieDomain(domain) {
+  const d = String(domain || '').toLowerCase()
+  return ZALO_COOKIE_DOMAIN_ALLOWLIST.some((suffix) => d === suffix || d.endsWith('.' + suffix) || d === '.' + suffix)
+}
+
 async function getZaloCookies(ses) {
   const all = await ses.cookies.get({})
-  return all.filter((c) => {
-    const domain = String(c.domain || '').toLowerCase()
-    return domain.includes('zalo.me') || domain.includes('zaloapp.com')
-  })
+  return all.filter((c) => isZaloCookieDomain(c.domain))
 }
 
 function scheduleCookieSave(profileName, ses) {
@@ -772,13 +816,15 @@ function scheduleCookieSave(profileName, ses) {
 function normalizeImportedPayload(raw) {
   // New web format.
   if (raw && raw.format === 'zalomask-web-account') {
+    const cookies = Array.isArray(raw.chromiumCookies) ? raw.chromiumCookies
+      : Array.isArray(raw.cookies) ? raw.cookies
+      : Array.isArray(raw?.webSession?.cookies) ? raw.webSession.cookies
+      : []
     return {
       displayName: raw.displayName || raw.profileName || 'Imported Web',
       zUuid: raw.zUuid || raw?.webSession?.zUuid || raw?.session?.zUuid || '',
       localStorage: raw.localStorage || raw?.webSession?.localStorage || {},
-      cookies: Array.isArray(raw.cookies)
-        ? raw.cookies
-        : (Array.isArray(raw?.webSession?.cookies) ? raw.webSession.cookies : []),
+      cookies,
       proxy: normalizeProxy(raw.proxy || {}),
       fingerprint: normalizeFingerprint(raw.fingerprint || {}),
       session: raw.session || raw?.webSession?.session || null,
@@ -862,9 +908,14 @@ async function collectExportAccount(profileName) {
     saveProfileMeta(profileName, meta)
   }
 
+  // Live read from the Chromium partition is the source of truth — meta may
+  // be slightly stale (debounced 1.2s save). Filtered against allow-list so
+  // export only carries Zalo cookies, not random tracking ones.
+  const chromiumCookies = liveCookies.length ? liveCookies : (meta?.webSession?.cookies || [])
+
   return {
     format: 'zalomask-web-account',
-    version: 2,
+    version: 3,
     exportedAt: new Date().toISOString(),
     profileName,
     displayName: meta.displayName || profileName,
@@ -872,7 +923,11 @@ async function collectExportAccount(profileName) {
     proxy: normalizeProxy(meta?.proxy || {}),
     fingerprint: normalizeFingerprint(meta?.fingerprint || {}),
     localStorage: meta?.webSession?.localStorage || {},
-    cookies: meta?.webSession?.cookies || [],
+    // Both fields carry the same data — `cookies` for backward compat with
+    // older importers, `chromiumCookies` is the explicit field name that
+    // documents intent (Chromium partition cookies, not Zalo client cookies).
+    cookies: chromiumCookies,
+    chromiumCookies,
     session: meta?.webSession?.session || null,
   }
 }
@@ -1328,6 +1383,30 @@ ipcMain.handle('open-profile', async (_event, payload) => {
   const profileName = String(payload?.profileName || '').trim()
   if (!profileName) return { ok: false, message: 'Thiếu profileName' }
   try {
+    // -- Issue #3: license-bound profile validation ---------------------
+    // Profile mới sinh sau khi multi-key landing có gắn license_id. Nếu
+    // license đó bị revoked/expired thì chặn mở. Profile legacy (không có
+    // license_id) vẫn cho mở để backward compat.
+    const meta = loadProfileMeta(profileName)
+    if (meta?.license_id) {
+      const lic = activeLicensesCache.get(meta.license_id)
+      if (lic) {
+        if (lic.status !== 'active') {
+          logRuntime('open-profile-blocked', { profileName, licenseId: meta.license_id, status: lic.status })
+          return { ok: false, message: 'License gắn với profile này đã ' + lic.status + '. Liên hệ admin nếu cần khôi phục.' }
+        }
+        if (new Date(lic.expires_at) < new Date()) {
+          logRuntime('open-profile-blocked', { profileName, licenseId: meta.license_id, reason: 'expired' })
+          return { ok: false, message: 'License gắn với profile này đã hết hạn. Vui lòng gia hạn.' }
+        }
+      } else {
+        // Cache trống — có thể đang offline hoặc chưa sync xong. Cho mở
+        // nhưng log lại + kích hoạt sync nền để lần sau bắt được.
+        logRuntime('open-profile-license-not-in-cache', { profileName, licenseId: meta.license_id })
+        triggerBackgroundLicenseSync('open-profile-cache-miss')
+      }
+    }
+
     await openWebProfile(profileName)
     return { ok: true }
   } catch (error) {
@@ -1568,6 +1647,22 @@ ipcMain.handle('cloud-sync-download', async () => {
       const dir = path.join(PROFILES_DIR, name)
       ensureDir(dir)
       writeJson(path.join(dir, 'meta.json'), { ...meta, updatedAt: new Date().toISOString() })
+
+      // Seed Chromium partition cookies. Without this, the downloaded meta has
+      // cookies recorded but Chromium's partition cookie store is empty so
+      // chat.zalo.me would force a fresh QR scan.
+      const cookies = Array.isArray(meta?.webSession?.chromiumCookies)
+        ? meta.webSession.chromiumCookies
+        : (Array.isArray(meta?.webSession?.cookies) ? meta.webSession.cookies : [])
+      if (cookies.length > 0) {
+        try {
+          const ses = session.fromPartition(partitionFor(name))
+          await ses.clearStorageData({ storages: ['cookies'] }).catch(() => {})
+          await seedCookiesForSession(ses, cookies)
+        } catch (err) {
+          logRuntime('cloud-download-seed-error', { profile: name, message: err?.message })
+        }
+      }
       imported++
     }
     logRuntime('cloud-download', { imported, uploadedAt: rs.body.uploadedAt })

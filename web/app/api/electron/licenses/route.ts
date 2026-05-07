@@ -4,7 +4,9 @@ import { adminClient } from '@/lib/supabase'
 export const runtime = 'nodejs'
 
 /**
- * GET /api/electron/licenses?key=ZM-ABC
+ * POST /api/electron/licenses
+ *
+ * Body: { key: string }
  *
  * Electron app fetches active licenses for a given key.
  * Used to:
@@ -12,41 +14,31 @@ export const runtime = 'nodejs'
  * 2. Calculate total profile quota from all active licenses
  * 3. Check single-session enforcement (session_id must match)
  *
+ * Why POST not GET:
+ *   The license key is a credential. Putting it in the query string would
+ *   leak it into server logs, browser history, proxy logs, and any support
+ *   screenshots. POST + JSON body keeps the key out of those leak channels.
+ *
  * Returns:
  * {
  *   ok: true,
  *   user: { id, email, display_name },
- *   licenses: [
- *     {
- *       id,
- *       license_id,
- *       key,
- *       tier_id,
- *       account_quota,
- *       duration,
- *       expires_at,
- *       status, // 'active', 'revoked', 'expired'
- *       active_session_id,
- *       revoked_at,
- *       delete_after
- *     }
- *   ],
+ *   licenses: [...],
  *   totalQuota: number,
- *   effectiveQuota: number // sum of active + not-expired
+ *   effectiveQuota: number
  * }
- * or
- * {
- *   ok: false,
- *   message: "Key invalid" | "All licenses expired" | etc.
- * }
+ * or { ok: false, message }
  */
-export async function GET(req: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
-    const { searchParams } = new URL(req.url)
-    const key = searchParams.get('key')?.trim()
+    const body = await req.json().catch(() => null) as { key?: string } | null
+    const key = String(body?.key || '').trim()
 
     if (!key) {
-      return NextResponse.json({ ok: false, message: 'key parameter required' }, { status: 400 })
+      return NextResponse.json(
+        { ok: false, message: 'key bắt buộc trong body JSON' },
+        { status: 400 }
+      )
     }
 
     const admin = adminClient()
@@ -73,7 +65,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, message: 'User not found' }, { status: 404 })
     }
 
-    // 3. Get all licenses for this user (for multi-key scenario)
+    // 3. Get all licenses for this user (multi-key scenario)
     const { data: allLicenses, error: allErr } = await admin
       .from('licenses')
       .select('id, license_id, key, tier_id, account_quota, duration, expires_at, status, active_session_id, revoked_at, delete_after')
@@ -84,7 +76,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, message: 'Failed to fetch licenses' }, { status: 500 })
     }
 
-    // 4. Filter active licenses (status='active' AND not expired)
+    // 4. Filter active licenses
     const now = new Date()
     const activeLicenses = (allLicenses || []).filter((lic) => {
       return lic.status === 'active' && new Date(lic.expires_at) > now
@@ -97,11 +89,11 @@ export async function GET(req: NextRequest) {
       )
     }
 
-    // 5. Calculate total quotas
+    // 5. Calculate quotas
     const totalQuota = (allLicenses || []).reduce((sum, lic) => sum + (lic.account_quota || 0), 0)
     const effectiveQuota = activeLicenses.reduce((sum, lic) => sum + (lic.account_quota || 0), 0)
 
-    // 6. Audit log: electron app fetched licenses
+    // 6. Audit log — never log full key, only last 4
     await admin.from('audit_log').insert({
       actor_id: user.id,
       action: 'electron-licenses-fetch',

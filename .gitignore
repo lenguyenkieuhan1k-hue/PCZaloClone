@@ -22,6 +22,7 @@ config.local.json
 # --- Local secrets / environment ---
 **/.env.local
 **/.env.*.local
+client_secret_*.json
 
 # --- Local profile/session data ---
 profiles/

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getServerClient, adminClient } from '@/lib/supabase'
+import { serverClient, adminClient } from '@/lib/supabase'
 import { PLAN_TIERS, DURATION_DAYS, type Duration } from '@/lib/plans'
 
 interface RenewRequest {
@@ -8,7 +8,7 @@ interface RenewRequest {
 }
 
 export async function POST(req: NextRequest) {
-  const client = getServerClient()
+  const client = serverClient()
 
   try {
     const { data: { user }, error: authError } = await client.auth.getUser()

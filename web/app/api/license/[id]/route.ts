@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getServerClient } from '@/lib/supabase'
+import { serverClient } from '@/lib/supabase'
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const client = getServerClient()
+  const client = serverClient()
   const licenseId = params.id
 
   try {
