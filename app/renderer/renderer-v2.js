@@ -383,7 +383,8 @@ async function handleExportSelected() {
     return
   }
   closeBackupModal()
-  setStatus(`Đã sao lưu ${rs.count || selected.length} profile`)
+  setStatus(`Đã sao lưu và xoá ${rs.count || selected.length} profile`)
+  await refresh()
 }
 
 async function handleListAction(event) {
@@ -432,8 +433,10 @@ async function handleListAction(event) {
     const rs = await window.api.exportProfile(profileName)
     if (!rs || !rs.ok) {
       if (rs?.message !== 'Đã huỷ') alert('Xuất profile thất bại: ' + (rs?.message || 'unknown'))
+    } else {
+      setStatus(`Đã xuất và xoá profile: ${profileName}`)
+      await refresh()
     }
-    setStatus('Sẵn sàng')
     return
   }
 
@@ -914,6 +917,21 @@ function bindUpdate() {
       const mb = (n) => Math.round((n || 0) / 1024 / 1024)
       $('updateProgressText').textContent = pct + '% (' + mb(info.received) + ' / ' + mb(info.total) + ' MB)'
     })
+  }
+
+  // Force a foreground check at startup so users don't need to wait for
+  // the background timer before seeing update availability.
+  if (typeof window.api.updateCheck === 'function') {
+    window.api.updateCheck().then((rs) => {
+      if (!rs || !rs.ok || !rs.hasUpdate) return
+      _updateAvailable = rs
+      const pillEl = $('updatePill')
+      if (pillEl) {
+        pillEl.classList.remove('hidden')
+        pillEl.title = 'Bản ' + (rs.remoteVersion || '?') + ' đã sẵn sàng'
+      }
+      showUpdateModal(rs)
+    }).catch(() => {})
   }
 }
 

@@ -1520,15 +1520,20 @@ ipcMain.handle('check-proxy', async (_event, payload) => {
   return checkProxyViaCurl(payload?.proxy || payload || {})
 })
 
-ipcMain.handle('delete-profile', async (_event, payload) => {
-  const profileName = String(payload?.profileName || '').trim()
-  if (!profileName) return { ok: false, message: 'Thiếu profileName' }
-
+function deleteProfileLocal(profileName) {
+  if (!profileName) return
   const win = webWindows.get(profileName)
   if (win && !win.isDestroyed()) win.close()
 
   const dir = profileDir(profileName)
   if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true })
+}
+
+ipcMain.handle('delete-profile', async (_event, payload) => {
+  const profileName = String(payload?.profileName || '').trim()
+  if (!profileName) return { ok: false, message: 'Thiếu profileName' }
+
+  deleteProfileLocal(profileName)
   return { ok: true }
 })
 
@@ -1546,7 +1551,8 @@ ipcMain.handle('export-profile', async (_event, payload) => {
 
   if (!rs || rs.canceled || !rs.filePath) return { ok: false, message: 'Đã huỷ' }
   fs.writeFileSync(rs.filePath, JSON.stringify(withChecksum(payloadOut), null, 2), 'utf8')
-  return { ok: true, filePath: rs.filePath }
+  deleteProfileLocal(profileName)
+  return { ok: true, filePath: rs.filePath, deletedProfile: profileName }
 })
 
 ipcMain.handle('export-profiles', async (_event, payload) => {
@@ -1580,7 +1586,10 @@ ipcMain.handle('export-profiles', async (_event, payload) => {
   }
 
   fs.writeFileSync(rs.filePath, JSON.stringify(withChecksum(bundle), null, 2), 'utf8')
-  return { ok: true, filePath: rs.filePath, count: accounts.length }
+  for (const profileName of profileNames) {
+    deleteProfileLocal(profileName)
+  }
+  return { ok: true, filePath: rs.filePath, count: accounts.length, deletedProfiles: profileNames }
 })
 
 ipcMain.handle('import-profile', async () => {

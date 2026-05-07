@@ -28,6 +28,16 @@ let downloadInfo = null               // { localPath, version }
 let downloading = false
 let lastError = null
 
+function broadcastUpdateAvailable(payload) {
+  const windows = BrowserWindow.getAllWindows()
+  for (const win of windows) {
+    if (!win || win.isDestroyed()) continue
+    try {
+      win.webContents.send('update-available', payload)
+    } catch (_) {}
+  }
+}
+
 /* ---------- Config ---------- */
 
 function getConfig(rootConfigPath) {
@@ -282,28 +292,22 @@ function startBackgroundChecks(opts) {
   setTimeout(async () => {
     const result = await checkForUpdates({ configPath })
     if (result.ok && result.hasUpdate) {
-      const win = BrowserWindow.getAllWindows()[0]
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('update-available', {
-          localVersion: result.localVersion,
-          remoteVersion: result.remoteVersion,
-          releaseNotes: result.releaseNotes
-        })
-      }
+      broadcastUpdateAvailable({
+        localVersion: result.localVersion,
+        remoteVersion: result.remoteVersion,
+        releaseNotes: result.releaseNotes
+      })
     }
   }, 30 * 1000)
 
   setInterval(async () => {
     const result = await checkForUpdates({ configPath })
     if (result.ok && result.hasUpdate) {
-      const win = BrowserWindow.getAllWindows()[0]
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('update-available', {
-          localVersion: result.localVersion,
-          remoteVersion: result.remoteVersion,
-          releaseNotes: result.releaseNotes
-        })
-      }
+      broadcastUpdateAvailable({
+        localVersion: result.localVersion,
+        remoteVersion: result.remoteVersion,
+        releaseNotes: result.releaseNotes
+      })
     }
   }, CHECK_INTERVAL_MS)
 }
