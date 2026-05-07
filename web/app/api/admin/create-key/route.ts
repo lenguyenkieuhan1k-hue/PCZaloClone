@@ -40,8 +40,8 @@ export async function POST(req: NextRequest) {
 
   const admin = adminClient()
 
-  // Lookup user nếu có email
-  let userId: string | null = null
+  // Resolve target user. Nếu để trống email thì gán key cho chính admin đang đăng nhập.
+  let userId = data.user.id
   if (userEmail) {
     const { data: userRow } = await admin
       .from('users')
@@ -50,6 +50,19 @@ export async function POST(req: NextRequest) {
       .maybeSingle()
     if (!userRow) return NextResponse.json({ ok: false, message: `Không tìm thấy user với email: ${userEmail}` }, { status: 404 })
     userId = userRow.id
+  } else {
+    const { data: selfUser } = await admin
+      .from('users')
+      .select('id')
+      .eq('id', data.user.id)
+      .maybeSingle()
+    if (!selfUser) {
+      await admin.from('users').upsert({
+        id: data.user.id,
+        email: data.user.email,
+        display_name: (data.user.user_metadata?.name as string) || data.user.email,
+      })
+    }
   }
 
   // Generate key
@@ -76,6 +89,7 @@ export async function POST(req: NextRequest) {
   // Audit log
   const adminUserId = data.user.id
   await admin.from('audit_log').insert({
+    actor_id: adminUserId,
     action: 'admin-create-key',
     license_id: license.id,
     detail: { adminEmail: data.user.email, tierId, accountQuota, expiresAt: expDate.toISOString(), userEmail: userEmail || null, note },
