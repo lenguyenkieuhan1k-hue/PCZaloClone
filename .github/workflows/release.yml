@@ -36,7 +36,7 @@ jobs:
         run: npm ci
 
       - name: Install electron-builder
-        run: npm install --no-save electron-builder@^24.13.3
+        run: npm install --no-save electron-builder@^26.8.1
 
       - name: Setup code signing certificate (if available)
         if: env.SIGNING_CERT_BASE64 != ''
