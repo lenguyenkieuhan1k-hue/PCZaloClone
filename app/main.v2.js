@@ -683,12 +683,14 @@ function normalizeImportedPayload(raw) {
   if (raw && raw.format === 'zalomask-web-account') {
     return {
       displayName: raw.displayName || raw.profileName || 'Imported Web',
-      zUuid: raw.zUuid || raw?.session?.zUuid || '',
-      localStorage: raw.localStorage || {},
-      cookies: Array.isArray(raw.cookies) ? raw.cookies : [],
+      zUuid: raw.zUuid || raw?.webSession?.zUuid || raw?.session?.zUuid || '',
+      localStorage: raw.localStorage || raw?.webSession?.localStorage || {},
+      cookies: Array.isArray(raw.cookies)
+        ? raw.cookies
+        : (Array.isArray(raw?.webSession?.cookies) ? raw.webSession.cookies : []),
       proxy: normalizeProxy(raw.proxy || {}),
       fingerprint: normalizeFingerprint(raw.fingerprint || {}),
-      session: raw.session || null,
+      session: raw.session || raw?.webSession?.session || null,
       sourceFormat: raw.format,
     }
   }
@@ -709,19 +711,26 @@ function normalizeImportedPayload(raw) {
 
   // Extension-like data fallback.
   const maybeAccount = raw?.account || raw?.data || raw
-  const cookies = Array.isArray(maybeAccount?.cookies) ? maybeAccount.cookies : []
-  const localStorage = maybeAccount?.localStorage || maybeAccount?.storage?.localStorage || {}
-  const zUuid = maybeAccount?.zUuid || maybeAccount?.session?.zUuid || localStorage?.z_uuid || localStorage?.sh_z_uuid || ''
+  const cookies = Array.isArray(maybeAccount?.cookies)
+    ? maybeAccount.cookies
+    : (Array.isArray(maybeAccount?.webSession?.cookies) ? maybeAccount.webSession.cookies : [])
+  const localStorage = maybeAccount?.localStorage || maybeAccount?.webSession?.localStorage || maybeAccount?.storage?.localStorage || {}
+  const zUuid = maybeAccount?.zUuid
+    || maybeAccount?.webSession?.zUuid
+    || maybeAccount?.session?.zUuid
+    || localStorage?.z_uuid
+    || localStorage?.sh_z_uuid
+    || ''
 
   if (cookies.length > 0 || Object.keys(localStorage).length > 0) {
     return {
-      displayName: maybeAccount?.displayName || maybeAccount?.me?.displayName || 'Imported Session',
+      displayName: maybeAccount?.displayName || maybeAccount?.profileName || maybeAccount?.me?.displayName || 'Imported Session',
       zUuid,
       localStorage,
       cookies,
       proxy: normalizeProxy(maybeAccount?.proxy || {}),
       fingerprint: normalizeFingerprint(maybeAccount?.fingerprint || {}),
-      session: maybeAccount?.session || null,
+      session: maybeAccount?.session || maybeAccount?.webSession?.session || null,
       sourceFormat: raw?.format || 'generic',
     }
   }
