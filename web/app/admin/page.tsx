@@ -3,6 +3,7 @@ import { getSessionUser } from '@/lib/auth-helpers'
 import { adminClient } from '@/lib/supabase'
 import { formatVnd } from '@/lib/plans'
 import RevokeLicenseButton from './RevokeLicenseButton'
+import CreateKeyForm from './CreateKeyForm'
 
 export const metadata = { title: 'Admin — ZaloMask' }
 
@@ -33,6 +34,10 @@ export default async function AdminPage() {
         <Stat label="Tổng license" value={String(licenses?.length || 0) + '+'} />
         <Stat label="Tổng user" value={String(users?.length || 0) + '+'} />
       </div>
+
+      <h2 className="text-xl font-semibold mt-12">Tạo key thủ công</h2>
+      <p className="text-sm text-gray-500 mt-1">Tạo key với tier và ngày hết hạn tuỳ chỉnh. Ghi vào audit_log.</p>
+      <CreateKeyForm />
 
       <h2 className="text-xl font-semibold mt-12">License gần đây</h2>
       <div className="mt-4 border rounded-xl overflow-x-auto">
