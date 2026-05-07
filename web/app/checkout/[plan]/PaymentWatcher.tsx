@@ -37,8 +37,10 @@ export default function PaymentWatcher({ memo }: { memo: string }) {
 
     async function pollOnce() {
       try {
+        console.error(`[PAYMENT-WATCHER] Poll #${Math.floor((Date.now() - startedAtRef.current) / POLL_INTERVAL_MS)} at ${new Date().toISOString()}, memo="${memo}"`)
         const rs = await fetch(`/api/payment-status?memo=${query}`, { cache: 'no-store' })
         if (!rs.ok) {
+          console.error(`[PAYMENT-WATCHER] HTTP ${rs.status}`)
           if (disposed) return
           setStatus('error')
           setErrorDetail(`HTTP ${rs.status}`)
@@ -46,9 +48,11 @@ export default function PaymentWatcher({ memo }: { memo: string }) {
           return
         }
         const data: ApiResponse = await rs.json()
+        console.error(`[PAYMENT-WATCHER] Response:`, JSON.stringify(data))
         if (disposed) return
 
         if (data.status === 'paid') {
+          console.error(`[PAYMENT-WATCHER] SUCCESS! status='paid', redirecting to /dashboard`)
           setStatus('paid')
           const url = data.licenseId
             ? `/dashboard?paid=${encodeURIComponent(data.licenseId)}`
@@ -57,13 +61,16 @@ export default function PaymentWatcher({ memo }: { memo: string }) {
           return
         }
         if (data.status === 'failed') {
+          console.error(`[PAYMENT-WATCHER] Payment failed`)
           setStatus('failed')
           schedule()
           return
         }
+        console.error(`[PAYMENT-WATCHER] Still pending, scheduling next poll...`)
         // pending / unauthorized / unknown
         const elapsed = Date.now() - startedAtRef.current
         if (elapsed > MAX_WAIT_MS) {
+          console.error(`[PAYMENT-WATCHER] TIMEOUT after ${elapsed}ms`)
           setStatus('timeout')
           // stop polling — user can refresh manually
           return
@@ -71,6 +78,7 @@ export default function PaymentWatcher({ memo }: { memo: string }) {
         setStatus('pending')
         schedule()
       } catch (error) {
+        console.error(`[PAYMENT-WATCHER] Error:`, error)
         if (disposed) return
         setStatus('error')
         setErrorDetail(error instanceof Error ? error.message : 'unknown')

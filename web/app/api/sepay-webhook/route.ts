@@ -69,8 +69,12 @@ function safeSecretEquals(provided: string, expected: string): boolean {
 }
 
 export async function POST(req: NextRequest) {
+  const LOG_PREFIX = '[WEBHOOK-DEBUG]'
+  console.error(`${LOG_PREFIX} Webhook POST received at ${new Date().toISOString()}`)
+  
   const expected = String(process.env.SEPAY_WEBHOOK_SECRET || '').trim()
   if (!expected) {
+    console.error(`${LOG_PREFIX} ERROR: SEPAY_WEBHOOK_SECRET not configured`)
     return NextResponse.json({ ok: false, message: 'Webhook secret chưa cấu hình' }, { status: 500 })
   }
 
@@ -81,18 +85,37 @@ export async function POST(req: NextRequest) {
     .trim()
   const querySecret = String(req.nextUrl.searchParams.get('secret') || '').trim()
   const provided = headerSecret || querySecret
+  console.error(`${LOG_PREFIX} Auth check: headerSecret=${!!headerSecret}, querySecret=${!!querySecret}, provided=${!!provided}`)
+  
   if (!safeSecretEquals(provided, expected)) {
+    console.error(`${LOG_PREFIX} ERROR: Secret mismatch. provided length=${provided.length}, expected length=${expected.length}`)
     return NextResponse.json({ ok: false, message: 'Sai secret' }, { status: 401 })
   }
 
-  const payload = (await req.json().catch(() => null)) as SePayPayload | null
-  if (!payload) return NextResponse.json({ ok: false, message: 'Bad JSON' }, { status: 400 })
+  const payload = (await req.json().catch((e) => {
+    console.error(`${LOG_PREFIX} ERROR: Failed to parse JSON:`, e)
+    return null
+  })) as SePayPayload | null
+  if (!payload) {
+    console.error(`${LOG_PREFIX} ERROR: No payload or invalid JSON`)
+    return NextResponse.json({ ok: false, message: 'Bad JSON' }, { status: 400 })
+  }
+  
+  console.error(`${LOG_PREFIX} Payload received:`, JSON.stringify(payload, null, 2))
 
   // SePay reports both inbound and outbound on some accounts — only react to inbound.
-  if (payload.transferType !== 'in') return ok({ ignored: 'non-inbound' })
+  if (payload.transferType !== 'in') {
+    console.error(`[WEBHOOK-DEBUG] Ignoring non-inbound transfer: transferType=${payload.transferType}`)
+    return ok({ ignored: 'non-inbound' })
+  }
 
   const sepayTxnId = String(payload.id || '').trim()
-  if (!sepayTxnId) return ok({ ignored: 'missing-txn-id' })
+  if (!sepayTxnId) {
+    console.error(`[WEBHOOK-DEBUG] ERROR: No sepay_txn_id`)
+    return ok({ ignored: 'missing-txn-id' })
+  }
+  
+  console.error(`[WEBHOOK-DEBUG] Processing transaction: sepayTxnId=${sepayTxnId}, amount=${payload.transferAmount}, memo="${payload.content || payload.description}"`)
 
   const admin = adminClient()
 
@@ -205,7 +228,9 @@ export async function POST(req: NextRequest) {
   const rawAmount = Number(payload.transferAmount || 0)
   const memoText = String(payload.content || payload.description || '').slice(0, 500)
 
+  console.error(`[WEBHOOK-DEBUG] Memo parsed:`, JSON.stringify(memo))
   if (!memo) {
+    console.error(`[WEBHOOK-DEBUG] UNMATCHED: Memo doesn't parse to expected format`)
     // Unmatched — store as pending so admin can resolve manually.
     await upsertPaymentRow(admin, sepayTxnId, {
       amount_vnd: rawAmount,
@@ -216,6 +241,7 @@ export async function POST(req: NextRequest) {
   }
 
   const tier = PLAN_TIERS.find((t) => t.id === memo.tierId)
+  console.error(`[WEBHOOK-DEBUG] Tier lookup for '${memo.tierId}':`, tier ? 'FOUND' : 'NOT_FOUND')
   if (!tier) {
     await upsertPaymentRow(admin, sepayTxnId, {
       amount_vnd: rawAmount,
@@ -246,7 +272,9 @@ export async function POST(req: NextRequest) {
     .like('id', `${memo.userId}%`)
     .limit(2)
 
+  console.error(`[WEBHOOK-DEBUG] User lookup for prefix '${memo.userId}': found=${userMatch?.length || 0} matches`)
   if (!userMatch || userMatch.length !== 1) {
+    console.error(`[WEBHOOK-DEBUG] USER RESOLUTION FAILED: ambiguous or not found`)
     await upsertPaymentRow(admin, sepayTxnId, {
       amount_vnd: rawAmount,
       memo: memoText,
@@ -257,12 +285,15 @@ export async function POST(req: NextRequest) {
     return ok({ matched: true, accepted: false, reason: userMatch?.length ? 'ambiguous-user' : 'user-not-found' })
   }
   const user = userMatch[0]
+  console.error(`[WEBHOOK-DEBUG] User resolved: id=${user.id}, email=${user.email}`)
 
   // -- Mint license --
   const { data: keyResp } = await admin.rpc('generate_license_key')
   const licenseKey = String(keyResp || ('ZM-' + crypto.randomBytes(8).toString('hex').toUpperCase()))
   const days = DURATION_DAYS[memo.duration]
   const expiresAt = new Date(Date.now() + days * 24 * 3600 * 1000).toISOString()
+
+  console.error(`[WEBHOOK-DEBUG] Creating license: key=${licenseKey}, tier=${tier.id}, duration=${memo.duration}, days=${days}, expiresAt=${expiresAt}`)
 
   const { data: license, error: licErr } = await admin
     .from('licenses')
@@ -278,6 +309,7 @@ export async function POST(req: NextRequest) {
     .select('id')
     .single()
   if (licErr || !license) {
+    console.error(`[WEBHOOK-DEBUG] LICENSE INSERT FAILED:`, licErr)
     // Don't 500 to SePay — record as pending and let us debug.
     await upsertPaymentRow(admin, sepayTxnId, {
       user_id: user.id,
@@ -294,6 +326,8 @@ export async function POST(req: NextRequest) {
     })
     return ok({ matched: true, accepted: false, reason: 'license-insert-failed', error: licErr?.message })
   }
+  
+  console.error(`[WEBHOOK-DEBUG] License created successfully: id=${license.id}`)
 
   await upsertPaymentRow(admin, sepayTxnId, {
     user_id: user.id,
@@ -306,6 +340,8 @@ export async function POST(req: NextRequest) {
     status: 'paid',
     paid_at: new Date().toISOString(),
   }, existing?.id)
+  
+  console.error(`[WEBHOOK-DEBUG] Payment row created/updated with status=paid`)
 
   await admin.from('audit_log').insert({
     actor_id: user.id,
@@ -313,11 +349,14 @@ export async function POST(req: NextRequest) {
     action: 'create-via-sepay',
     detail: { sepay_txn_id: sepayTxnId, amount: rawAmount },
   })
+  
+  console.error(`[WEBHOOK-DEBUG] SUCCESS: Webhook processing complete. Returning accepted=true`)
 
   // Send email — best effort. Webhook still 200s if email fails.
   try {
     if (process.env.RESEND_API_KEY) {
       const resend = new Resend(process.env.RESEND_API_KEY)
+      console.error(`[WEBHOOK-DEBUG] Sending email to ${user.email}`)
       await resend.emails.send({
         from: process.env.RESEND_FROM_EMAIL || 'ZaloMask <noreply@zalomask.com>',
         to: user.email,
@@ -329,8 +368,10 @@ export async function POST(req: NextRequest) {
                <p>Cách dùng: mở ZaloMask → Cài đặt → License → dán key vào.</p>
                <p>Hỗ trợ: <a href="https://zalo.me/0981897779">Zalo 0981897779</a> hoặc Telegram @zalomask.</p>`,
       })
+      console.error(`[WEBHOOK-DEBUG] Email sent successfully`)
     }
-  } catch {
+  } catch (emailErr) {
+    console.error(`[WEBHOOK-DEBUG] Email send failed (non-fatal):`, emailErr)
     // ignore — admin can resend
   }
 

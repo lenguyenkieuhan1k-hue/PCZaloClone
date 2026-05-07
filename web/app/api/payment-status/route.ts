@@ -17,20 +17,31 @@ function normalizeMemo(input: string): string {
 }
 
 export async function GET(req: NextRequest) {
+  const LOG_PREFIX = '[PAYMENT-STATUS-DEBUG]'
   const memo = String(req.nextUrl.searchParams.get('memo') || '').trim()
-  if (!memo) return NextResponse.json({ ok: false, message: 'Thiếu memo' }, { status: 400 })
+  console.error(`${LOG_PREFIX} Query received: memo="${memo}", timestamp=${new Date().toISOString()}`)
+  
+  if (!memo) {
+    console.error(`${LOG_PREFIX} ERROR: Missing memo parameter`)
+    return NextResponse.json({ ok: false, message: 'Thiếu memo' }, { status: 400 })
+  }
 
   const accessToken = req.cookies.get('sb-access-token')?.value
-  if (!accessToken) return NextResponse.json({ ok: false, status: 'unauthorized' }, { status: 401 })
+  if (!accessToken) {
+    console.error(`${LOG_PREFIX} ERROR: No access token cookie`)
+    return NextResponse.json({ ok: false, status: 'unauthorized' }, { status: 401 })
+  }
 
   const userClient = serverClient(accessToken)
   const { data: authData, error: authErr } = await userClient.auth.getUser(accessToken)
   if (authErr || !authData?.user?.id) {
+    console.error(`${LOG_PREFIX} ERROR: Auth failed:`, authErr)
     return NextResponse.json({ ok: false, status: 'unauthorized' }, { status: 401 })
   }
 
   const userId = authData.user.id
   const sinceIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+  console.error(`${LOG_PREFIX} Querying for userId=${userId}, since=${sinceIso}`)
 
   const { data: rows, error } = await userClient
     .from('payments')
@@ -40,26 +51,48 @@ export async function GET(req: NextRequest) {
     .order('created_at', { ascending: false })
     .limit(25)
 
-  if (error) return NextResponse.json({ ok: false, message: error.message }, { status: 500 })
+  if (error) {
+    console.error(`${LOG_PREFIX} ERROR: DB query failed:`, error)
+    return NextResponse.json({ ok: false, message: error.message }, { status: 500 })
+  }
+
+  console.error(`${LOG_PREFIX} DB returned ${rows?.length || 0} payment rows`)
+  if (rows && rows.length > 0) {
+    console.error(`${LOG_PREFIX} Payment rows:`, JSON.stringify(rows.slice(0, 3), null, 2))
+  }
 
   const target = normalizeMemo(memo)
+  console.error(`${LOG_PREFIX} Normalized target memo: "${target}"`)
+  
   const matchedRows = (rows || []).filter((row) => {
     const got = normalizeMemo(String(row.memo || ''))
     if (!got) return false
-    return got === target || got.includes(target) || target.includes(got)
+    const match = got === target || got.includes(target) || target.includes(got)
+    console.error(`${LOG_PREFIX} Comparing: got="${got}" vs target="${target}" → ${match}`)
+    return match
   })
+
+  console.error(`${LOG_PREFIX} Matched ${matchedRows.length} rows`)
 
   const matched =
     matchedRows.find((row) => row.status === 'paid') ||
     matchedRows.find((row) => row.status === 'failed') ||
     matchedRows[0]
 
-  if (!matched) return NextResponse.json({ ok: true, status: 'pending', matched: false })
+  if (!matched) {
+    console.error(`${LOG_PREFIX} No match found. Returning pending.`)
+    return NextResponse.json({ ok: true, status: 'pending', matched: false })
+  }
+  
+  const finalStatus = matched.status === 'paid' ? 'paid'
+    : matched.status === 'failed' ? 'failed'
+    : 'pending'
+  
+  console.error(`${LOG_PREFIX} MATCHED! Returning status='${finalStatus}', licenseId=${matched.license_id}, paid_at=${matched.paid_at}`)
+  
   return NextResponse.json({
     ok: true,
-    status: matched.status === 'paid' ? 'paid'
-      : matched.status === 'failed' ? 'failed'
-      : 'pending',
+    status: finalStatus,
     matched: true,
     licenseId: matched.license_id || null,
     paidAt: matched.paid_at || null,
