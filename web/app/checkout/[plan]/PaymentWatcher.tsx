@@ -19,8 +19,17 @@ export default function PaymentWatcher({ memo }: { memo: string }) {
   const router = useRouter()
   const [status, setStatus] = useState<PaymentStatus>('idle')
   const [errorDetail, setErrorDetail] = useState('')
+  const [remainingMs, setRemainingMs] = useState(MAX_WAIT_MS)
   const startedAtRef = useRef<number>(Date.now())
   const query = useMemo(() => encodeURIComponent(memo), [memo])
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const elapsed = Date.now() - startedAtRef.current
+      setRemainingMs(Math.max(0, MAX_WAIT_MS - elapsed))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     let disposed = false
@@ -114,10 +123,20 @@ export default function PaymentWatcher({ memo }: { memo: string }) {
       </p>
     )
   }
+
+  const totalSec = Math.ceil(remainingMs / 1000)
+  const mm = Math.floor(totalSec / 60).toString().padStart(2, '0')
+  const ss = Math.max(0, totalSec % 60).toString().padStart(2, '0')
+
   return (
-    <p className="mt-4 text-sm text-gray-600">
-      Đang tự động kiểm tra thanh toán mỗi {POLL_INTERVAL_MS / 1000} giây. Trang sẽ tự
-      chuyển sang Tài khoản ngay khi giao dịch được xác nhận.
-    </p>
+    <div className="mt-4 text-sm text-gray-600">
+      <p>
+        Đang tự động kiểm tra thanh toán mỗi {POLL_INTERVAL_MS / 1000} giây. Trang sẽ tự
+        chuyển sang Tài khoản ngay khi giao dịch được xác nhận.
+      </p>
+      <p className="mt-2 font-medium text-blue-700">
+        Thời gian giữ phiên thanh toán: {mm}:{ss}
+      </p>
+    </div>
   )
 }

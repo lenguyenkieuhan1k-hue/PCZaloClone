@@ -40,9 +40,17 @@ function parseMemo(memo: string): { userId: string; tierId: string; duration: Du
     .replace(/\s+/g, ' ')
     .trim()
     .toUpperCase()
-  const match = cleaned.match(/ZM[ \-]?([A-F0-9]{8})[ \-]?(TIER-?\d+)[ \-]?(1M|3M|6M|1Y)/)
+  const match = cleaned.match(/ZM[ \-]?([A-F0-9]{8})[ \-]?(TIER[A-Z0-9\-]+)[ \-]?(1M|3M|6M|1Y)/)
   if (!match) return null
-  const tierId = match[2].toLowerCase().replace(/^tier(\d)/, 'tier-$1')
+  let tierId = match[2].toLowerCase()
+  // Backward-compat: TIER6 -> tier-6
+  if (/^tier\d/.test(tierId)) {
+    tierId = tierId.replace(/^tier(\d)/, 'tier-$1')
+  }
+  // Normalize missing dash after "tier" for custom ids.
+  if (!tierId.startsWith('tier-') && tierId.startsWith('tier')) {
+    tierId = `tier-${tierId.slice(4).replace(/^-+/, '')}`
+  }
   return { userId: match[1].toLowerCase(), tierId, duration: match[3].toLowerCase() as Duration }
 }
 
