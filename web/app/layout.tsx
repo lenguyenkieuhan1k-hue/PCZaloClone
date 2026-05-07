@@ -9,6 +9,10 @@ export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'https://zalomask.com')
 }
 
+// Header auth state depends on request cookies. Force per-request render
+// so production does not keep a stale "Đăng nhập" button from static cache.
+export const dynamic = 'force-dynamic'
+
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const user = await getSessionUser()
 

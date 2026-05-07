@@ -9,6 +9,11 @@ interface PageProps {
   searchParams: { d?: string }
 }
 
+function envOrEmpty(value: string | undefined): string {
+  const v = String(value || '').trim()
+  return !v || v.startsWith('PLACEHOLDER_') ? '' : v
+}
+
 export default async function CheckoutPage({ params, searchParams }: PageProps) {
   const user = await getSessionUser()
   if (!user) redirect(`/auth/sign-in?next=${encodeURIComponent(`/checkout/${params.plan}?d=${searchParams.d || ''}`)}`)
@@ -43,8 +48,9 @@ export default async function CheckoutPage({ params, searchParams }: PageProps) 
   }
 
   // SePay QR url format: https://qr.sepay.vn/img?bank=<BANK>&acc=<ACC>&amount=<N>&des=<MEMO>
-  const bank = process.env.SEPAY_BANK_NAME || ''
-  const acc = process.env.SEPAY_BANK_ACCOUNT_NUMBER || ''
+  const bank = envOrEmpty(process.env.SEPAY_BANK_NAME)
+  const acc = envOrEmpty(process.env.SEPAY_BANK_ACCOUNT_NUMBER)
+  const accountHolder = envOrEmpty(process.env.SEPAY_ACCOUNT_HOLDER)
   // Memo format: ZM <userIdShort> <tierId> <duration> — must match parser in webhook.
   const memo = `ZM ${user.id.replace(/-/g, '').slice(0, 8)} ${plan.tier.id} ${duration}`.toUpperCase()
   const qrUrl = bank && acc
@@ -65,7 +71,7 @@ export default async function CheckoutPage({ params, searchParams }: PageProps) 
           <dl className="mt-8 text-sm space-y-2">
             <div className="flex justify-between"><dt className="text-gray-500">Ngân hàng</dt><dd className="font-mono">{bank || '—'}</dd></div>
             <div className="flex justify-between"><dt className="text-gray-500">Số TK</dt><dd className="font-mono">{acc || '—'}</dd></div>
-            <div className="flex justify-between"><dt className="text-gray-500">Chủ TK</dt><dd>{process.env.SEPAY_ACCOUNT_HOLDER || '—'}</dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">Chủ TK</dt><dd>{accountHolder || '—'}</dd></div>
             <div className="flex justify-between"><dt className="text-gray-500">Số tiền</dt><dd className="font-mono">{formatVnd(plan.price)}</dd></div>
             <div className="flex justify-between"><dt className="text-gray-500">Nội dung CK</dt><dd className="font-mono text-xs">{memo}</dd></div>
           </dl>
