@@ -9,11 +9,21 @@ import { serverClient } from '@/lib/supabase'
  * Auth: requires sb-access-token cookie (user must be signed in). */
 
 function normalizeMemo(input: string): string {
-  return String(input || '')
+  let normalized = String(input || '')
     .replace(/[^A-Za-z0-9\- ]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .toUpperCase()
+  
+  // Handle tier ID variants: TIERTEST1K → TIER TEST 1K, TIER6 → TIER 6, etc.
+  // This handles the case where SePay sends "TIERTEST1K" but we normalize QR memo as "TIER TEST 1K"
+  normalized = normalized.replace(/TIER([A-Z0-9]+)(\d+[A-Z]?)/g, (match, part1, part2) => {
+    return `TIER ${part1} ${part2}`
+  })
+  // Also handle: TIER[num] → TIER [num]
+  normalized = normalized.replace(/TIER(\d+)/g, 'TIER $1')
+  
+  return normalized
 }
 
 export async function GET(req: NextRequest) {
