@@ -72,7 +72,6 @@ PCZaloClone/
 │   │       ├── heartbeat/route.ts
 │   │       ├── claim-free/route.ts
 │   │       ├── sepay-webhook/route.ts
-│   │       ├── extension-import/route.ts
 │   │       └── dev/seed-license/route.ts
 │   ├── lib/
 │   │   ├── supabase.ts          ← browser/server/admin clients
@@ -82,11 +81,6 @@ PCZaloClone/
 │   ├── supabase/migrations/0001_init.sql
 │   ├── scripts/smoke-license.ps1
 │   └── package.json
-├── extension/                    ← Chrome ext AutoZalo Bridge v5
-│   ├── manifest.json
-│   ├── background.js
-│   ├── content/{zalo-main,zalo-bridge,web-bridge}.js
-│   └── EXTENSION_SESSION_FLOW.md
 ├── profiles/                     ← user profiles (gitignored)
 ├── config.json                   ← app settings + license API base + GitHub repo
 ├── README.md
@@ -260,32 +254,19 @@ CI workflow `.github/workflows/release.yml`: tag `v*` → electron-builder NSIS
 | `/api/heartbeat` | Single-session check |
 | `/api/sepay-webhook` | SePay → tạo key + email |
 | `/api/claim-free` | Cấp key tier-1 free (1/user) |
-| `/api/extension-import` | Chrome ext push session về |
 | `/api/dev/seed-license` | Dev test (NODE_ENV != production) |
 
 Schema Postgres: `web/supabase/migrations/0001_init.sql` — bảng `users`,
-`licenses`, `sessions`, `payments`, `audit_log`. Cộng thêm cần migrations
-mới cho `web_sessions` (extension import) — xem TODO trong KE_HOACH.
+`licenses`, `sessions`, `payments`, `audit_log`.
 
 License token Ed25519 — sign ở `web/lib/license-token.ts`, verify ở
 `app/main.v2.js::verifyLicenseToken`. Public key paste vào
 `config.json::licensePublicKeyPem`.
 
-## 10. Chrome extension (`extension/`)
+## 10. Extension module
 
-AutoZalo Bridge v5 (MV3). Inject content scripts MAIN+ISOLATED world vào
-`chat.zalo.me`. Khi user đăng nhập trong cửa sổ incognito được mở từ trang
-quản lý, extension capture cookies + zStorage + localStorage rồi POST về
-`POST /api/extension-import` với header
-`Authorization: Apikey <EXTENSION_IMPORT_SECRET>` (hoặc `Bearer <sb-access-token>`
-nếu user đang đăng nhập trên web).
-
-Backend tạo row `web_sessions(user_id, z_uuid, cookies, local_storage, ...)`.
-Electron app pull về để mở thẳng profile mà không cần quét QR.
-
-> **Hiện tại** bảng `web_sessions` chưa có trong `0001_init.sql`. Khi chạy
-> endpoint sẽ fail với "table not found". Migration mới cần thêm trước khi
-> deploy extension flow lên prod.
+Module Chrome extension đã được loại khỏi scope repository hiện tại.
+Luồng chính sản phẩm chỉ gồm Electron app + web license/payment.
 
 ## 11. Gotchas
 

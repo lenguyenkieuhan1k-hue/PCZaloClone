@@ -457,14 +457,13 @@ Mục tiêu phần này: đọc nhanh 1 lần là biết chính xác đã làm g
 
 ### Chưa xong (cần làm tiếp)
 
-1. Migration `0002_web_sessions.sql` chưa chạy lên Supabase production.
-2. App chưa pull session từ `web_sessions` về (chưa có `/api/web-sessions` GET + IPC + UI).
-3. Email "key sắp hết hạn" chưa wire (Resend cron).
-4. `/api/admin/revoke` chưa có.
-5. `/changelog` từ GitHub Releases API chưa làm.
-6. Offline grace period 30 phút cho heartbeat chưa làm.
-7. `/terms`, `/privacy` vẫn placeholder.
-8. `installer.nsh` + `customSign.js` reference trong package.json nhưng chưa có file → electron-builder fail.
+1. Migration `0002_web_sessions.sql` (legacy slot, hiện giữ free-tier index) chưa chạy lên Supabase production.
+2. Email "key sắp hết hạn" chưa wire (Resend cron).
+3. `/api/admin/revoke` chưa có.
+4. `/changelog` từ GitHub Releases API chưa làm.
+5. Offline grace period 30 phút cho heartbeat chưa làm.
+6. `/terms`, `/privacy` vẫn placeholder.
+7. `installer.nsh` + `customSign.js` reference trong package.json nhưng chưa có file → electron-builder fail.
 
 ### Rủi ro còn lại (production)
 
@@ -482,9 +481,8 @@ Mục tiêu phần này: đọc nhanh 1 lần là biết chính xác đã làm g
 
 ### P1 (cần để khách dùng smooth)
 
-5. `/api/web-sessions` GET + IPC `pull-extension-sessions` + UI button.
-6. Soạn `/terms` + `/privacy` tiếng Việt thật.
-7. `/api/admin/revoke` + UI nút Revoke trong `/admin`.
+5. Soạn `/terms` + `/privacy` tiếng Việt thật.
+6. `/api/admin/revoke` + UI nút Revoke trong `/admin`.
 
 ### P2 (nice to have)
 
