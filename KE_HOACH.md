@@ -24,6 +24,63 @@
 Ghi chú:
 - Các phần bên dưới vẫn giữ để tham chiếu lịch sử kế hoạch cũ, không còn phản ánh chính xác runtime mặc định hiện tại.
 
+## 0e. Cập nhật session 2026-05-07 (buổi chiều — Claude Sonnet 4.6)
+
+### ✅ Đã hoàn thành
+
+#### Cloud Sync (upload/download profiles qua server)
+- Thêm migration SQL `0003_cloud_sync.sql` — bảng `cloud_backups` (user_id unique, profiles_json jsonb)
+- Thêm 2 API route: `POST /api/cloud-sync/upload` và `GET /api/cloud-sync/download`
+- Auth cloud route: chấp nhận cả **web cookie** (trình duyệt) lẫn **Bearer license-token** (Electron app)
+- Fix Unicode sanitize: strip ký tự surrogate đơn lẻ + NUL trước khi insert JSONB (tránh lỗi Postgres)
+- Thêm IPC handlers trong `main.v2.js`: `cloud-sync-upload`, `cloud-sync-download`, `cloud-sync-status`
+- Thêm `runCloudUpload()`, `wipeAllLocalProfiles()`, `getJson()` helper
+- Luồng kicked: auto upload → wipe local → broadcast `license-kicked` → đóng webWindows
+- UI tab "Đồng bộ đám mây" trong renderer: nút Tải lên / Đồng bộ về / Làm mới
+- Cập nhật `preload.js`: expose `cloudSyncUpload`, `cloudSyncDownload`, `cloudSyncStatus`, `onProfilesReloaded`
+
+#### Admin web panel
+- Thêm trang `/admin` với bảng thống kê + bảng license + bảng user
+- Thêm form `CreateKeyForm` (client component): tạo key thủ công với tier, quota, expiry, user email tùy chọn
+- Thêm API `POST /api/admin/create-key` — admin-only, upsert user trước khi insert license
+- Fix null `user_id` khi email để trống → default về admin hiện tại
+- Hiển thị link "Quản trị" trong nav header và nút "Quản trị Admin" trong dashboard (chỉ show cho admin)
+- Fix crash server component dashboard: bỏ `onClick` trong server component
+
+#### Build exe
+- Build thành công: `app/dist/ZaloMask-Setup-26.3.1.exe` (89MB, NSIS installer)
+- Fix nhiều lỗi NSIS: `VIProductVersion already defined`, `ShellExecute invalid` → `ExecShell`, `APP_EXECUTABLE_NAME` → `APP_FILENAME`, MUI ordering warning → đơn giản hoá `installer.nsh`
+
+#### Badge license header app
+- Header top-right có pill động: màu xanh (active) / đỏ (expired) / cam (free)
+- Hiển thị tier + hạn dùng, cập nhật realtime qua event `license-updated`
+
+#### Fix import cross-machine
+- Parser `importProfile` nhận dạng cả 2 format: export chuẩn (field `webSession`) và meta lồng `webSession` từ cloud download
+
+#### Web: nút tải xuống trực tiếp
+- Thêm API route `GET /api/download`: fetch GitHub API → redirect 302 thẳng tới asset `.exe` mới nhất
+- Cập nhật landing page: nút "Tải xuống · Windows" + icon download, href `/api/download`
+
+---
+
+### 🔲 TODO tiếp theo (chưa làm)
+
+#### Cookie transfer sang máy khác (cần Claude làm)
+**Vấn đề:** Khi export/import hoặc cloud sync, cookies Chromium (partition `persist:web2:<name>`) không được backup → user phải login lại Zalo trên máy mới.
+
+**Yêu cầu cho Claude:**
+1. **Export**: Dùng `session.fromPartition('persist:web2:<name>').cookies.get({})` lấy tất cả cookies, gộp vào JSON export field `chromiumCookies`
+2. **Import**: Sau khi tạo profile mới, nếu JSON có `chromiumCookies`, dùng `session.fromPartition('persist:web2:<newName>').cookies.set(cookie)` để restore từng cookie (loop + await)
+3. **Cloud upload**: Gộp cookies vào `profiles_json` khi upload (hàm `runCloudUpload`)
+4. **Cloud download**: Restore cookies sau khi save meta.json (IPC `cloud-sync-download`)
+5. **Lưu ý kỹ thuật:**
+   - Chromium cookie fields: `httpOnly`, `secure`, `session`, `expirationDate` — map đúng khi restore
+   - Chỉ restore cookies domain `*.zalo.me`, `*.zadn.vn` để tránh rác
+   - Entry point: `app/main.v2.js` (hàm `exportProfile`, `importProfile`, `runCloudUpload`, IPC `cloud-sync-download`)
+
+---
+
 ## 0c. Cập nhật nhanh (2026-05-08)
 
 ### Đã hoàn thành trong app desktop (`app/main.v2.js`, `renderer-v2.js`)
