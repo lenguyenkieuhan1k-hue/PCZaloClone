@@ -31,6 +31,11 @@ const cookieSaveTimers = new Map()
 const localStorageSeedCache = new Map()
 let licenseHeartbeatTimer = null
 
+// Multi-key license cache: { license_id → { key, tier_id, account_quota, expires_at, status, active_session_id } }
+// Updated periodically from web API
+const activeLicensesCache = new Map()
+let licensesCachedAt = 0
+
 // Some Windows machines crash Electron renderers/GPU processes when loading Zalo Web.
 app.disableHardwareAcceleration()
 app.setAppUserModelId('com.zalomask.app')
@@ -131,6 +136,27 @@ function countWebProfiles() {
 }
 
 function getEffectiveProfileQuota() {
+  // Multi-key: sum all active licenses from cache
+  const now = new Date()
+  let totalQuota = 0
+  let source = 'free'
+
+  // Check if we have active licenses cached
+  if (activeLicensesCache.size > 0) {
+    let hasActive = false
+    for (const [_licenseId, lic] of activeLicensesCache.entries()) {
+      if (lic.status === 'active' && new Date(lic.expires_at) > now) {
+        totalQuota += Number(lic.account_quota || 0)
+        hasActive = true
+        source = 'license'
+      }
+    }
+    if (hasActive && totalQuota > 0) {
+      return { quota: totalQuota, source, licenses: Array.from(activeLicensesCache.values()) }
+    }
+  }
+
+  // Fallback to license-state.json (single key mode)
   const license = readLicenseState()
   if (license && String(license.status || '').toLowerCase() === 'active') {
     const licenseQuota = Number(license.accountQuota || 0)
@@ -180,6 +206,37 @@ async function getJson(url, opts = {}) {
   }
 }
 
+// Multi-key license sync: fetch all active licenses from web API
+async function syncLicensesFromWeb() {
+  const state = readLicenseState()
+  if (!state?.key) return { ok: false, message: 'Chưa có license key' }
+
+  const { baseUrl } = getLicenseConfig()
+  const rs = await getJson(`${baseUrl}/api/electron/licenses?key=${encodeURIComponent(state.key)}`)
+
+  if (!rs.ok || !rs.body?.ok) {
+    logRuntime('license-sync-failed', { status: rs.status, message: rs.body?.message })
+    return { ok: false, message: rs.body?.message || 'Sync thất bại' }
+  }
+
+  // Update cache with all licenses from API
+  activeLicensesCache.clear()
+  const licenses = rs.body.licenses || []
+  for (const lic of licenses) {
+    activeLicensesCache.set(lic.license_id, lic)
+  }
+  licensesCachedAt = Date.now()
+
+  logRuntime('license-sync-success', {
+    totalLicenses: licenses.length,
+    activeLicenses: licenses.filter((l) => l.status === 'active' && new Date(l.expires_at) > new Date()).length,
+    totalQuota: rs.body.totalQuota,
+    effectiveQuota: rs.body.effectiveQuota,
+  })
+
+  return { ok: true, licenses, totalQuota: rs.body.totalQuota, effectiveQuota: rs.body.effectiveQuota }
+}
+
 function broadcastLicenseStatus() {
   const state = readLicenseState() || {}
   mainWindow?.webContents.send('license-updated', state)
@@ -195,6 +252,12 @@ function stopLicenseHeartbeat() {
 async function runHeartbeatOnce() {
   const state = readLicenseState()
   if (!state?.sessionId) return { ok: false, message: 'Chưa có session license' }
+  
+  // Multi-key: also sync licenses on heartbeat
+  await syncLicensesFromWeb().catch((err) => {
+    logRuntime('license-sync-on-heartbeat-error', { message: err?.message })
+  })
+
   const { baseUrl } = getLicenseConfig()
   const rs = await postJson(`${baseUrl}/api/heartbeat`, { sessionId: state.sessionId })
   const status = String(rs?.body?.status || '')
@@ -258,7 +321,20 @@ function ensureLicenseHeartbeat() {
 function getLicenseRuntimeStatus() {
   const state = readLicenseState() || {}
   const { requireLicense, baseUrl } = getLicenseConfig()
-  const { quota, source } = getEffectiveProfileQuota()
+  const quotaRs = getEffectiveProfileQuota()
+  const { quota, source } = quotaRs
+  
+  // Multi-key: include active licenses from cache
+  const activeLicenses = quotaRs.licenses ? 
+    quotaRs.licenses.map((lic) => ({
+      license_id: lic.license_id,
+      key_last4: String(lic.key || '').slice(-4),
+      tier_id: lic.tier_id,
+      account_quota: lic.account_quota,
+      status: lic.status,
+      expires_at: lic.expires_at,
+    })) : []
+  
   return {
     configured: true,
     apiBaseUrl: baseUrl,
@@ -266,6 +342,8 @@ function getLicenseRuntimeStatus() {
     effectiveQuota: quota,
     quotaSource: source,
     state,
+    activeLicenses,
+    licensesCachedAt,
   }
 }
 
@@ -292,6 +370,11 @@ function bootLicenseRuntime() {
   } catch (_) {}
 
   if (state?.sessionId && String(state.status || '').toLowerCase() === 'active') {
+    // Multi-key: fetch licenses from web API on boot
+    syncLicensesFromWeb().catch((error) => {
+      logRuntime('license-sync-boot-error', { message: error?.message || 'unknown' })
+    })
+
     ensureLicenseHeartbeat()
     runHeartbeatOnce().catch((error) => {
       logRuntime('license-heartbeat-boot-error', { message: error?.message || 'unknown' })
@@ -1113,9 +1196,21 @@ ipcMain.handle('get-license-status', async () => {
   return { ok: true, ...getLicenseRuntimeStatus() }
 })
 
+ipcMain.handle('sync-licenses', async () => {
+  const rs = await syncLicensesFromWeb()
+  if (rs.ok) {
+    broadcastLicenseStatus()
+  }
+  return rs
+})
+
 ipcMain.handle('activate-license', async (_event, payload) => {
   const key = String(payload?.key || '').trim()
   if (!key) return { ok: false, message: 'Thiếu key kích hoạt' }
+
+  // Multi-key: clear old cache on activate
+  activeLicensesCache.clear()
+  licensesCachedAt = 0
 
   const { baseUrl, publicKeyPem } = getLicenseConfig()
   if (!publicKeyPem) {
@@ -1157,6 +1252,12 @@ ipcMain.handle('activate-license', async (_event, payload) => {
   }
 
   saveLicenseState(next)
+  
+  // Multi-key: sync licenses immediately after activation
+  await syncLicensesFromWeb().catch((err) => {
+    logRuntime('license-sync-on-activate-error', { message: err?.message })
+  })
+
   broadcastLicenseStatus()
   ensureLicenseHeartbeat()
   runHeartbeatOnce().catch(() => {})
