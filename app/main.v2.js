@@ -150,13 +150,14 @@ function getLicenseConfig() {
   return { baseUrl, publicKeyPem, requireLicense }
 }
 
-async function postJson(url, payload) {
+async function postJson(url, payload, opts = {}) {
   const controller = new AbortController()
   const t = setTimeout(() => controller.abort(), 12000)
   try {
+    const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) }
     const rs = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload || {}),
       signal: controller.signal,
     })
@@ -167,11 +168,11 @@ async function postJson(url, payload) {
   }
 }
 
-async function getJson(url) {
+async function getJson(url, opts = {}) {
   const controller = new AbortController()
   const t = setTimeout(() => controller.abort(), 12000)
   try {
-    const rs = await fetch(url, { method: 'GET', signal: controller.signal })
+    const rs = await fetch(url, { method: 'GET', headers: { ...(opts.headers || {}) }, signal: controller.signal })
     const json = await rs.json().catch(() => ({}))
     return { ok: rs.ok, status: rs.status, body: json }
   } finally {
@@ -1384,6 +1385,7 @@ async function runCloudUpload({ silent = false } = {}) {
   if (!state?.sessionId || state.status !== 'active') {
     return { ok: false, message: 'Chưa kích hoạt license hoặc session không active.' }
   }
+  const headers = state?.token ? { Authorization: `Bearer ${state.token}` } : {}
   const { baseUrl } = getLicenseConfig()
   ensureDir(PROFILES_DIR)
   const names = fs.readdirSync(PROFILES_DIR, { withFileTypes: true })
@@ -1394,7 +1396,7 @@ async function runCloudUpload({ silent = false } = {}) {
     const rs = await postJson(`${baseUrl}/api/cloud-sync/upload`, {
       sessionId: state.sessionId,
       profiles,
-    })
+    }, { headers })
     if (!silent) logRuntime('cloud-upload', { ok: rs?.body?.ok, count: profiles.length })
     return { ok: rs?.body?.ok === true, profileCount: profiles.length, message: rs?.body?.message }
   } catch (err) {
@@ -1423,9 +1425,10 @@ ipcMain.handle('cloud-sync-download', async () => {
   if (!state?.sessionId || state.status !== 'active') {
     return { ok: false, message: 'Chưa kích hoạt license hoặc session không active.' }
   }
+  const headers = state?.token ? { Authorization: `Bearer ${state.token}` } : {}
   const { baseUrl } = getLicenseConfig()
   try {
-    const rs = await getJson(`${baseUrl}/api/cloud-sync/download?sessionId=${encodeURIComponent(state.sessionId)}`)
+    const rs = await getJson(`${baseUrl}/api/cloud-sync/download?sessionId=${encodeURIComponent(state.sessionId)}`, { headers })
     if (!rs?.body?.ok) return { ok: false, message: rs?.body?.message || 'Download thất bại' }
 
     const profiles = Array.isArray(rs.body.profiles) ? rs.body.profiles : []
@@ -1453,10 +1456,11 @@ ipcMain.handle('cloud-sync-status', async () => {
   if (!state?.sessionId || state.status !== 'active') {
     return { ok: false, hasBackup: false, message: 'Chưa kích hoạt license.' }
   }
+  const headers = state?.token ? { Authorization: `Bearer ${state.token}` } : {}
   const { baseUrl } = getLicenseConfig()
   try {
-    const rs = await getJson(`${baseUrl}/api/cloud-sync/download?sessionId=${encodeURIComponent(state.sessionId)}`)
-    if (!rs?.body?.ok) return { ok: false, hasBackup: false }
+    const rs = await getJson(`${baseUrl}/api/cloud-sync/download?sessionId=${encodeURIComponent(state.sessionId)}`, { headers })
+    if (!rs?.body?.ok) return { ok: false, hasBackup: false, message: rs?.body?.message || 'Cloud sync chưa sẵn sàng' }
     const count = rs.body.profileCount || 0
     return { ok: true, hasBackup: count > 0, profileCount: count, uploadedAt: rs.body.uploadedAt }
   } catch (err) {
