@@ -43,11 +43,16 @@ export async function GET(req: NextRequest) {
   if (error) return NextResponse.json({ ok: false, message: error.message }, { status: 500 })
 
   const target = normalizeMemo(memo)
-  const matched = (rows || []).find((row) => {
+  const matchedRows = (rows || []).filter((row) => {
     const got = normalizeMemo(String(row.memo || ''))
     if (!got) return false
     return got === target || got.includes(target) || target.includes(got)
   })
+
+  const matched =
+    matchedRows.find((row) => row.status === 'paid') ||
+    matchedRows.find((row) => row.status === 'failed') ||
+    matchedRows[0]
 
   if (!matched) return NextResponse.json({ ok: true, status: 'pending', matched: false })
   return NextResponse.json({

@@ -75,7 +75,10 @@ export async function POST(req: NextRequest) {
   }
 
   const auth = req.headers.get('authorization') || ''
-  const headerSecret = auth.replace(/^Apikey\s+/i, '').trim()
+  const headerSecret = auth
+    .replace(/^Apikey\s+/i, '')
+    .replace(/^Bearer\s+/i, '')
+    .trim()
   const querySecret = String(req.nextUrl.searchParams.get('secret') || '').trim()
   const provided = headerSecret || querySecret
   if (!safeSecretEquals(provided, expected)) {
@@ -299,6 +302,7 @@ export async function POST(req: NextRequest) {
     memo: memoText,
     tier_id: tier.id,
     duration: memo.duration,
+    method: 'purchase',
     status: 'paid',
     paid_at: new Date().toISOString(),
   }, existing?.id)
