@@ -27,9 +27,11 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [showRenewModal, setShowRenewModal] = useState<string | null>(null)
   const [showUpgradeModal, setShowUpgradeModal] = useState<string | null>(null)
+  const [showDeactivateModal, setShowDeactivateModal] = useState<string | null>(null)
   const [renewDuration, setRenewDuration] = useState<Duration>('1m')
   const [upgradeTier, setUpgradeTier] = useState<string>('')
   const [upgradeDuration, setUpgradeDuration] = useState<Duration>('1m')
+  const [deactivateReason, setDeactivateReason] = useState<string>('no-longer-needed')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>('')
 
@@ -89,6 +91,32 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
       setShowUpgradeModal(null)
       // Redirect to upgrade checkout page
       router.push(`/checkout/upgrade/${data.newLicenseId}`)
+    } catch (err) {
+      setError('Lỗi kết nối')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDeactivate = async (licenseId: string) => {
+    setLoading(true)
+    setError('')
+    try {
+      const res = await fetch('/api/deactivate-license', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ license_id: licenseId, reason: deactivateReason }),
+      })
+
+      const data = await res.json()
+      if (!data.ok) {
+        setError(data.message)
+        return
+      }
+
+      setShowDeactivateModal(null)
+      alert(`License đã huỷ bỏ.\n\n⚠️ Profiles sẽ bị xoá sau 24h.\nBạn vẫn có thể khôi phục từ đám mây trong thời gian này.`)
+      onLicensesUpdate?.()
     } catch (err) {
       setError('Lỗi kết nối')
     } finally {
@@ -185,7 +213,10 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
                     </button>
                   </>
                 )}
-                <button className="px-4 py-2 rounded-lg bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 text-sm font-medium">
+                <button
+                  onClick={() => setShowDeactivateModal(license.id)}
+                  className="px-4 py-2 rounded-lg bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 text-sm font-medium"
+                >
                   Huỷ bỏ
                 </button>
               </div>
@@ -234,6 +265,62 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
                   disabled={loading}
                 >
                   {loading ? 'Đang xử lý...' : 'Tiếp tục'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Deactivate Modal */}
+      {showDeactivateModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl max-w-md w-full mx-4 p-6 shadow-xl">
+            <h3 className="text-xl font-bold text-red-700">⚠️ Huỷ bỏ License</h3>
+            <p className="mt-2 text-sm text-gray-600">
+              Key: <span className="font-mono">{licenses.find((l) => l.id === showDeactivateModal)?.key}</span>
+            </p>
+
+            <div className="mt-4 p-3 rounded-lg bg-red-50 text-red-800 text-sm">
+              <p className="font-semibold">⚠️ Chú ý quan trọng:</p>
+              <ul className="mt-2 space-y-1 text-xs">
+                <li>• Tất cả profiles sẽ bị xoá sau 24 giờ</li>
+                <li>• Nhưng bạn vẫn có thể khôi phục từ đám mây</li>
+                <li>• Nếu cần, mở lại app trong 24h để huỷ hành động</li>
+              </ul>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Lý do huỷ bỏ (optional)</label>
+                <select
+                  value={deactivateReason}
+                  onChange={(e) => setDeactivateReason(e.target.value)}
+                  className="mt-2 w-full p-2 border border-gray-300 rounded-lg text-sm"
+                >
+                  <option value="no-longer-needed">Không cần nữa</option>
+                  <option value="switching-key">Chuyển sang key khác</option>
+                  <option value="testing">Chỉ để test</option>
+                  <option value="other">Lý do khác</option>
+                </select>
+              </div>
+
+              {error && <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{error}</div>}
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowDeactivateModal(null)}
+                  className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+                  disabled={loading}
+                >
+                  Hủy
+                </button>
+                <button
+                  onClick={() => handleDeactivate(showDeactivateModal)}
+                  className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 font-medium"
+                  disabled={loading}
+                >
+                  {loading ? 'Đang xử lý...' : 'Xác nhận huỷ bỏ'}
                 </button>
               </div>
             </div>
