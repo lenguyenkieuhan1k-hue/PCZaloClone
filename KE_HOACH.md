@@ -301,6 +301,115 @@ This will guide you through:
 
 ## 0b. Điều chỉnh kế hoạch (bản áp dụng từ hiện tại)
 
+## 0e. HANDOFF CHO CLAUDE (TỪ TRƯA ĐẾN TỐI 2026-05-08)
+
+Mục tiêu phần này: đọc nhanh 1 lần là biết chính xác đã làm gì, còn gì dang dở, và bắt đầu từ đâu.
+
+### A. Những việc đã làm xong
+
+1) GitHub + deploy pipeline cơ bản
+- Đã khởi tạo git repo local, push thành công lên:
+   - https://github.com/lenguyenkieuhan1k-hue/PCZaloClone
+- Đã thêm ignore dữ liệu local/nhạy cảm:
+   - `.gitignore` bỏ qua `profiles/`, `**/.env.local`, `web/supabase/.temp/`, `web/client_secret_*.json`, các file export JSON.
+
+2) Web auth Google
+- Đã sửa lỗi env client không đọc được do dynamic access `process.env[name]`:
+   - vá ở `web/lib/supabase.ts`.
+- Đã sửa callback OAuth để xử lý cả PKCE + implicit:
+   - thay route cũ bằng page client `web/app/auth/callback/page.tsx`.
+- Đã sửa header login bị stale sau khi login:
+   - ép render theo request ở `web/app/layout.tsx` với `dynamic = 'force-dynamic'`.
+
+3) UI/UX web
+- Đã bỏ box cảnh báo vàng ở trang pricing.
+- Đã sửa description SEO thành: “Quản lý nhiều tài khoản Zalo.”
+
+4) Thanh toán SePay
+- Đã cấu hình hiển thị QR theo env bank ở checkout.
+- Đã chặn placeholder env để tránh render QR lỗi:
+   - vá ở `web/app/checkout/[plan]/page.tsx`.
+- Đã thêm auto-check trạng thái thanh toán ngay trên trang checkout:
+   - API mới: `web/app/api/payment-status/route.ts`
+   - Client poll mới: `web/app/checkout/[plan]/PaymentWatcher.tsx`
+   - Khi thấy `paid` sẽ tự redirect về dashboard.
+
+5) Webhook SePay
+- Đã hỗ trợ nhận secret từ header API Key và cả query param fallback:
+   - vá ở `web/app/api/sepay-webhook/route.ts`.
+- Hiện khuyến nghị chạy chuẩn production theo API Key header của SePay + env secret trùng nhau.
+
+6) Keypair license
+- Đã tạo keypair Ed25519 mẫu để user dán lên Vercel.
+- User đã được hướng dẫn đúng format PEM multiline cho 2 biến:
+   - `LICENSE_TOKEN_PRIVATE_KEY`
+   - `LICENSE_TOKEN_PUBLIC_KEY`
+
+### B. Commit timeline quan trọng
+
+- `79922cd` chore: initial project import
+- `ed63042` chore(web): update site description
+- `b12d368` fix(webhook): support secret via query param
+- `3ade19e` fix(web): dynamic header auth and guard placeholder payment env
+- `bd77554` feat(web): auto-check sepay payment status on checkout
+
+### C. Những thứ chưa xong / cần hoàn thiện
+
+1) Xác nhận E2E giao dịch thật đã "tự cấp key"
+- Cần test thực 1 giao dịch mới sau commit `bd77554`:
+   - chuyển khoản đúng memo trên checkout,
+   - chờ webhook,
+   - xác nhận `licenses` có row mới,
+   - xác nhận dashboard hiển thị key mới.
+
+2) App desktop verify token production
+- `config.json` hiện còn trống `licensePublicKeyPem`.
+- Phải dán public key đúng cặp với private key trên Vercel để activate-license chạy thật.
+
+3) Auto-update production
+- `app/package.json` vẫn để placeholder `REPLACE_GITHUB_OWNER/REPLACE_GITHUB_REPO` trong build publish.
+- Chưa chốt code-sign cert thực tế (EV cert mới ở mức chuẩn bị script).
+
+4) Email gửi key
+- Nếu `RESEND_API_KEY` chưa set thì webhook vẫn tạo key nhưng không gửi mail tự động.
+
+### D. Những điểm còn nghi ngờ / rủi ro
+
+1) Idempotency webhook khi SePay retry
+- `payments.sepay_txn_id` có unique index, nhưng code hiện chưa handle mềm trường hợp insert trùng ở mọi nhánh.
+- Có thể phát sinh 500 khi webhook bị gọi lại cùng txn (cần harden thêm để trả 200 an toàn).
+
+2) Match memo
+- Parser hiện dựa vào format `ZM <id8> <tier-x> <duration>`.
+- Nếu user/bank làm biến dạng nội dung chuyển khoản có thể rơi vào pending/manual.
+
+3) Trạng thái UI sau thanh toán
+- Đã có polling ở checkout, nhưng vẫn phụ thuộc webhook ghi DB kịp thời.
+- Nên bổ sung thông báo “đã nhận tiền nhưng đang xử lý” rõ hơn cho user nếu pending > 1-2 phút.
+
+### E. Trạng thái workspace hiện tại
+
+- Git branch: `main`
+- Remote: `origin/main` đã push đủ các commit ở trên.
+- Có 1 file local chưa commit: `web/.env.vercel.import` (file hỗ trợ import env, không đẩy lên repo).
+
+### F. Claude nên bắt đầu từ đâu (thứ tự đề nghị)
+
+1) Kiểm thử giao dịch thật và xác nhận DB
+- Theo dõi Vercel function logs cho endpoint `/api/sepay-webhook` và `/api/payment-status`.
+
+2) Harden webhook idempotent
+- Bọc insert payment theo `sepay_txn_id`, nếu trùng thì trả `ok: true` thay vì ném lỗi 500.
+
+3) Chốt app-license production
+- Dán `licensePublicKeyPem` vào `config.json`.
+- Test activate từ app thật với key vừa mua.
+
+4) Chốt release production
+- Điền owner/repo thật ở `app/package.json` build publish.
+- Chạy 1 vòng build installer + update-check nội bộ.
+
+
 ### Điều chỉnh trọng tâm
 
 - Đóng băng luồng clone desktop legacy (`main.js`) ở mức maintenance-only, không thêm tính năng mới.
