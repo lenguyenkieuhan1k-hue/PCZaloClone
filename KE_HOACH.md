@@ -81,6 +81,105 @@ Ghi chú:
 
 ---
 
+## 0h. Session 2026-05-07 tối muộn — Phase 2 Complete (Checkout + Webhook)
+
+### ✅ Phase 2 HOÀN THÀNH
+
+#### Checkout pages (2 routes)
+- `/checkout/upgrade/[newLicenseId]/page.tsx` — display new tier, transfer details, SePay QR
+- `/checkout/renew/[licenseId]/page.tsx` — display renewal dates, SePay QR
+
+#### SePay Webhook enhancements
+- Handle `method='upgrade'`: activate new license + email "Nâng cấp thành công"
+- Handle `method='renewal'`: extend expiry + email "Gia hạn thành công"
+- Keep existing `method='new'` flow unchanged
+
+#### Dashboard LicenseTable fix
+- Add `useRouter` hook
+- `handleUpgrade()`: redirect `/checkout/upgrade/${newLicenseId}`
+- `handleRenew()`: redirect `/checkout/renew/${licenseId}`
+
+**Commit:** `fd3ce04`
+
+---
+
+### ✅ Phase 3 HOÀN THÀNH
+
+#### Deactivate/Revoke License
+- API `POST /api/deactivate-license` → status='revoked', grace 24h
+- Dashboard modal "Huỷ bỏ" button + confirmation + reason selection
+- Email notification "Profiles sẽ bị xoá sau 24h"
+- Migration 0005: add `revoked_at`, `delete_after` columns + cleanup helper function
+- Grace period: user can still restore from cloud backup within 24h
+
+**Commit:** `04e1fbb`
+
+---
+
+### ✅ Phase 4 HOÀN THÀNH (FOUNDATION)
+
+#### Electron Multi-Key Foundation
+- Partition function: `persist:zalomask-web-${licenseId}:${profileName}` (multi-key)
+- Fallback: `persist:zalomask-web-${profileName}` (legacy, no license_id)
+- Each new profile: auto-assign `license_id` (UUID)
+- Profile meta now stores: `license_id`
+- List profiles: include `license_id` in response
+- Backward compatible: old profiles still work (partition without license_id)
+
+**Commit:** `61a85ae`
+
+**Status**: Foundation ready. When user upgrades web app with multi-license active:
+1. Electron app reads license_id from profile meta
+2. Each profile uses isolated partition per key
+3. Ready for future: sync licenses from web API + partition profiles per active key
+
+---
+
+### 📊 Multi-Key System — READY FOR PRODUCTION
+
+**Current State:**
+```
+User (Google Account)
+  │
+  ├─ License 1 (key: ZM-ABC, tier-6, active)
+  │  └─ Profiles: 3 / 6 (partition: persist:zalomask-web-<license1-uuid>:*)
+  │  └─ Actions: Nâng cấp → Tier-15 (new key created)
+  │             Gia hạn → extend expiry (same key)
+  │             Huỷ bỏ → grace 24h
+  │
+  ├─ License 2 (key: ZM-DEF, tier-15, active) ← from upgrade
+  │  └─ Profiles: 3 / 15 (partition: persist:zalomask-web-<license2-uuid>:*)
+  │  └─ Actions: Nâng cấp, Gia hạn, Huỷ bỏ
+  │
+  ├─ License 3 (key: ZM-GHI, tier-6, revoked) ← pending auto-delete after 24h
+  │  └─ Profiles: 5 (still accessible for restore from cloud)
+  │  └─ Auto-delete: profiles_cleanup job or next heartbeat
+  │
+  └─ Total Quota: 6 + 15 = 21 accounts (sum of active)
+```
+
+---
+
+### 📝 Todo / Pending
+
+**Phase 4b (Optional — Web License Sync for Electron)**:
+- Electron: download active licenses from web API (using license key as auth?)
+- Sync profiles per active license_id
+- Calculate total quota = SUM(active licenses)
+- Heartbeat single-session check per license_id
+
+**Phase 5 (Optional — Admin Panel Enhanced)**:
+- Revoke license UI (admin-only)
+- Delete profiles after grace period (job)
+- License audit log viewer
+
+**Phase 6 (Optional — Testing & Deployment)**:
+- Full-flow testing: upgrade, renew, revoke, cloud sync
+- Build v2.7.0 (multi-key Electron + web)
+- Deploy to staging → production
+
+---
+
 ## 0g. Hiện tại session (2026-05-07 tối — Implement Multi-Key License)
 
 ### ✅ Đã hoàn thành (Web backend + UI)
