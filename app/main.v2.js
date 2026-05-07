@@ -242,6 +242,24 @@ function bootLicenseRuntime() {
   const state = readLicenseState() || {}
   broadcastLicenseStatus()
 
+  // --- Boot-time config warnings (logged so dev/support can grep) ---
+  const { publicKeyPem, baseUrl } = getLicenseConfig()
+  if (!publicKeyPem) {
+    logRuntime('config-warning', { kind: 'license-public-key-missing', message: 'config.json thiếu licensePublicKeyPem — tính năng License sẽ báo lỗi cho user.' })
+  }
+  try {
+    const cfg = readConfig()
+    const owner = String(cfg?.github?.owner || '').trim()
+    const repo = String(cfg?.github?.repo || '').trim()
+    if (!owner || !repo || /^REPLACE_/.test(owner) || /^REPLACE_/.test(repo)) {
+      logRuntime('config-warning', { kind: 'github-placeholder', owner, repo, message: 'config.json.github.owner/repo còn placeholder — auto-update sẽ không tìm được release.' })
+    }
+    if (!baseUrl || baseUrl === 'https://zalomask.com') {
+      // default OK; just note it
+      logRuntime('config-info', { kind: 'license-api-base', baseUrl })
+    }
+  } catch (_) {}
+
   if (state?.sessionId && String(state.status || '').toLowerCase() === 'active') {
     ensureLicenseHeartbeat()
     runHeartbeatOnce().catch((error) => {
@@ -1050,7 +1068,12 @@ ipcMain.handle('activate-license', async (_event, payload) => {
 
   const { baseUrl, publicKeyPem } = getLicenseConfig()
   if (!publicKeyPem) {
-    return { ok: false, message: 'Chưa cấu hình licensePublicKeyPem trong config.json' }
+    return {
+      ok: false,
+      message:
+        'App chưa được cấu hình production: thiếu licensePublicKeyPem trong config.json. ' +
+        'Liên hệ admin/dev để dán Ed25519 public key vào file cấu hình.',
+    }
   }
 
   const deviceFingerprint = makeDeviceFingerprint()
@@ -1097,6 +1120,10 @@ ipcMain.handle('deactivate-license', async () => {
 })
 
 ipcMain.handle('license-heartbeat', async () => {
+  const { publicKeyPem } = getLicenseConfig()
+  if (!publicKeyPem) {
+    return { ok: false, message: 'App chưa được cấu hình production: thiếu licensePublicKeyPem trong config.json.' }
+  }
   return runHeartbeatOnce()
 })
 

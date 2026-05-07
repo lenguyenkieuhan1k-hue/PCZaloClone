@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 import { getSessionUser } from '@/lib/auth-helpers'
 import { adminClient } from '@/lib/supabase'
 import { formatVnd } from '@/lib/plans'
+import RevokeLicenseButton from './RevokeLicenseButton'
 
 export const metadata = { title: 'Admin — ZaloMask' }
 
@@ -43,6 +44,7 @@ export default async function AdminPage() {
               <th className="px-4 py-2">Trạng thái</th>
               <th className="px-4 py-2">Hết hạn</th>
               <th className="px-4 py-2">Tạo</th>
+              <th className="px-4 py-2">Hành động</th>
             </tr>
           </thead>
           <tbody>
@@ -53,6 +55,9 @@ export default async function AdminPage() {
                 <td className="px-4 py-2"><span className={l.status === 'active' ? 'text-green-600' : 'text-red-600'}>{l.status}</span></td>
                 <td className="px-4 py-2">{new Date(l.expires_at).toLocaleDateString('vi-VN')}</td>
                 <td className="px-4 py-2">{new Date(l.created_at).toLocaleDateString('vi-VN')}</td>
+                <td className="px-4 py-2">
+                  <RevokeLicenseButton licenseId={l.id} keyText={l.key} />
+                </td>
               </tr>
             ))}
           </tbody>

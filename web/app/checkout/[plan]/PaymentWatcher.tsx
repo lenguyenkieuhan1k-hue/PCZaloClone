@@ -1,53 +1,123 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-type PaymentStatus = 'idle' | 'pending' | 'paid' | 'failed' | 'error'
+type PaymentStatus = 'idle' | 'pending' | 'paid' | 'failed' | 'error' | 'timeout'
+
+const POLL_INTERVAL_MS = 6000
+const MAX_WAIT_MS = 10 * 60 * 1000           // 10 phút trước khi đề nghị support
+
+interface ApiResponse {
+  ok?: boolean
+  status?: 'pending' | 'paid' | 'failed' | 'unauthorized'
+  matched?: boolean
+  licenseId?: string | null
+}
 
 export default function PaymentWatcher({ memo }: { memo: string }) {
   const router = useRouter()
   const [status, setStatus] = useState<PaymentStatus>('idle')
+  const [errorDetail, setErrorDetail] = useState('')
+  const startedAtRef = useRef<number>(Date.now())
   const query = useMemo(() => encodeURIComponent(memo), [memo])
 
   useEffect(() => {
     let disposed = false
+    let timer: ReturnType<typeof setTimeout> | null = null
 
-    async function checkOnce() {
+    async function pollOnce() {
       try {
         const rs = await fetch(`/api/payment-status?memo=${query}`, { cache: 'no-store' })
         if (!rs.ok) {
-          if (!disposed) setStatus('error')
+          if (disposed) return
+          setStatus('error')
+          setErrorDetail(`HTTP ${rs.status}`)
+          schedule()
           return
         }
-        const data = await rs.json()
-        const next = (data?.status || 'pending') as PaymentStatus
+        const data: ApiResponse = await rs.json()
         if (disposed) return
-        setStatus(next)
-        if (next === 'paid') {
-          router.replace('/dashboard?msg=Thanh toán thành công, key đã được cấp.')
+
+        if (data.status === 'paid') {
+          setStatus('paid')
+          const url = data.licenseId
+            ? `/dashboard?paid=${encodeURIComponent(data.licenseId)}`
+            : '/dashboard?msg=' + encodeURIComponent('Thanh toán thành công, key đã được cấp.')
+          router.replace(url)
+          return
         }
-      } catch (_) {
-        if (!disposed) setStatus('error')
+        if (data.status === 'failed') {
+          setStatus('failed')
+          schedule()
+          return
+        }
+        // pending / unauthorized / unknown
+        const elapsed = Date.now() - startedAtRef.current
+        if (elapsed > MAX_WAIT_MS) {
+          setStatus('timeout')
+          // stop polling — user can refresh manually
+          return
+        }
+        setStatus('pending')
+        schedule()
+      } catch (error) {
+        if (disposed) return
+        setStatus('error')
+        setErrorDetail(error instanceof Error ? error.message : 'unknown')
+        schedule()
       }
     }
 
-    checkOnce()
-    const timer = setInterval(checkOnce, 8000)
+    function schedule() {
+      if (disposed) return
+      timer = setTimeout(pollOnce, POLL_INTERVAL_MS)
+    }
+
+    pollOnce()
     return () => {
       disposed = true
-      clearInterval(timer)
+      if (timer) clearTimeout(timer)
     }
   }, [query, router])
 
   if (status === 'paid') {
-    return <p className="mt-4 text-sm text-green-700">Đã xác nhận thanh toán, đang chuyển hướng...</p>
+    return (
+      <p className="mt-4 text-sm text-green-700 font-medium">
+        ✅ Đã xác nhận thanh toán — đang chuyển sang trang Tài khoản...
+      </p>
+    )
   }
   if (status === 'failed') {
-    return <p className="mt-4 text-sm text-red-600">Giao dịch đã được ghi nhận nhưng chưa đủ số tiền theo gói. Vui lòng liên hệ hỗ trợ.</p>
+    return (
+      <p className="mt-4 text-sm text-red-600">
+        ⚠ Giao dịch đã ghi nhận nhưng số tiền chưa khớp với gói. Vui lòng inbox{' '}
+        <a href="https://zalo.me/0981897779" className="underline font-medium">Zalo 0981897779</a> để được xử lý.
+      </p>
+    )
+  }
+  if (status === 'timeout') {
+    return (
+      <div className="mt-4 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+        <p className="font-medium">⏳ Đã chờ hơn 10 phút mà chưa nhận được xác nhận.</p>
+        <p className="mt-2">Nếu bạn vừa chuyển khoản, hệ thống sẽ tự cập nhật trong vài phút nữa — refresh trang này để kiểm tra.</p>
+        <p className="mt-2">Nếu cần xử lý gấp, inbox{' '}
+          <a href="https://zalo.me/0981897779" className="underline font-medium">Zalo 0981897779</a> kèm ảnh chụp giao dịch + nội dung CK.
+        </p>
+      </div>
+    )
   }
   if (status === 'error') {
-    return <p className="mt-4 text-sm text-amber-700">Đang chờ hệ thống xác nhận thanh toán...</p>
+    return (
+      <p className="mt-4 text-sm text-amber-700">
+        Đang chờ hệ thống xác nhận thanh toán... ({errorDetail || 'tạm thời mất kết nối'})
+      </p>
+    )
   }
-  return <p className="mt-4 text-sm text-gray-600">Đang tự động kiểm tra thanh toán mỗi vài giây...</p>
+  return (
+    <p className="mt-4 text-sm text-gray-600">
+      Đang tự động kiểm tra thanh toán mỗi {POLL_INTERVAL_MS / 1000} giây. Trang sẽ tự
+      chuyển sang Tài khoản ngay khi giao dịch được xác nhận.
+    </p>
+  )
 }

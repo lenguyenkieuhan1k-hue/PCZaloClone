@@ -12,7 +12,6 @@
 | `app/` | Ứng dụng Electron (web2 — entry `main.v2.js`). |
 | `app/legacy/` | Code v1 (clone Zalo PC qua patch app.asar). Không build, giữ tham khảo. Xem `app/legacy/README.md`. |
 | `web/` | Next.js 14 — landing, pricing, dashboard, admin, API. Deploy độc lập sang Vercel. Xem [web/README.md](web/README.md). |
-| `extension/` | Chrome extension AutoZalo Bridge — capture session từ chat.zalo.me, đẩy về `web/api/extension-import`. |
 | `.github/workflows/release.yml` | CI build NSIS installer + push GitHub Release khi tag `v*`. |
 | `KE_HOACH.md` | Lộ trình sản phẩm 5 phase. |
 | `AGENTS.md` | Tài liệu kỹ thuật cho AI assistants làm việc trên repo. |

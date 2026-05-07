@@ -46,7 +46,7 @@ export function serverClient(accessToken?: string): SupabaseClient {
       auth: { persistSession: false, autoRefreshToken: false },
       global: accessToken
         ? { headers: { Authorization: `Bearer ${accessToken}` } }
-        : undefined
+        : undefined,
     }
   )
 }
@@ -61,6 +61,6 @@ export function adminClient(): SupabaseClient {
 
 export function isAdminEmail(email: string | null | undefined): boolean {
   if (!email) return false
-  const list = (process.env.ADMIN_EMAILS || '').split(',').map(s => s.trim().toLowerCase())
+  const list = (process.env.ADMIN_EMAILS || '').split(',').map((s) => s.trim().toLowerCase())
   return list.includes(email.toLowerCase())
 }

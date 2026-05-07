@@ -6,7 +6,9 @@ import { formatVnd, DURATION_LABEL, type Duration } from '@/lib/plans'
 
 export const metadata = { title: 'Tài khoản — ZaloMask' }
 
-export default async function DashboardPage() {
+interface DashboardSearchParams { paid?: string; msg?: string }
+
+export default async function DashboardPage({ searchParams }: { searchParams: DashboardSearchParams }) {
   const user = await getSessionUser()
   if (!user) redirect('/auth/sign-in')
 
@@ -33,6 +35,19 @@ export default async function DashboardPage() {
           Mua key mới
         </Link>
       </div>
+
+      {(searchParams?.paid || searchParams?.msg) && (
+        <div className="mt-6 p-4 rounded-xl border border-green-200 bg-green-50 text-green-800 text-sm">
+          {searchParams.paid ? (
+            <>
+              <strong>✅ Thanh toán thành công.</strong> License vừa được cấp đã hiển thị bên dưới.
+              Bấm vào key để copy, mở app ZaloMask → Cài đặt → License → dán key vào.
+            </>
+          ) : (
+            <>{decodeURIComponent(String(searchParams.msg || ''))}</>
+          )}
+        </div>
+      )}
 
       <h2 className="text-xl font-semibold mt-10">License đã mua</h2>
       {!licenses || licenses.length === 0 ? (
