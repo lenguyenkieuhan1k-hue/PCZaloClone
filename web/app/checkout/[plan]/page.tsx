@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { getSessionUser } from '@/lib/auth-helpers'
 import { findPlan, formatVnd, DURATION_LABEL, type Duration } from '@/lib/plans'
+import PaymentWatcher from './PaymentWatcher'
 
 export const metadata = { title: 'Thanh toán — ZaloMask' }
 
@@ -94,6 +95,7 @@ export default async function CheckoutPage({ params, searchParams }: PageProps) 
       <div className="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-xl text-sm">
         Sau khi chuyển khoản, key sẽ được gửi qua email kèm hướng dẫn nhập vào app.
         Nếu sau 5 phút chưa nhận được, inbox <a href="https://zalo.me/0981897779" className="text-brand underline">Zalo 0981897779</a> để được xử lý thủ công.
+        <PaymentWatcher memo={memo} />
       </div>
     </div>
   )
