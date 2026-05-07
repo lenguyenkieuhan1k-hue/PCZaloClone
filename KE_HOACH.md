@@ -429,6 +429,77 @@ Mục tiêu phần này: đọc nhanh 1 lần là biết chính xác đã làm g
 - Không mở rộng thêm kỹ thuật patch sâu vào runtime desktop clone trong giai đoạn này.
 - Mọi thay đổi liên quan license/web/cloud cần tương thích trực tiếp với metadata profile v2 hiện tại (bao gồm fingerprint/proxy).
 
+## 0f. Handoff 2026-05-08 (đợt 4) — production hardening
+
+### Đã xong trong đợt này
+
+**Web — SePay & checkout:**
+- `app/api/sepay-webhook/route.ts` viết lại với **idempotency**:
+  - Check `sepay_txn_id` trước mọi insert. Nếu giao dịch đã `paid` + có `license_id` → return ok=true với licenseId, không tạo lại.
+  - `upsertPaymentRow()` helper update in-place khi row tồn tại, insert mới khi chưa có; bắt lỗi unique-constraint thành audit log thay vì 500.
+  - Memo regex tolerate `tier-6` lẫn `tier6` (auto-correct).
+  - Mọi nhánh failure (tier sai, số tiền thiếu, ambiguous user, license-insert lỗi) đều return 2xx + ghi audit log → SePay không retry-bomb.
+- `app/api/payment-status/route.ts` thêm `licenseId` vào response để PaymentWatcher redirect chính xác.
+- `app/checkout/[plan]/PaymentWatcher.tsx` viết lại:
+  - Polling 6s/lần qua `setTimeout` (không leak interval khi component unmount).
+  - **Timeout 10 phút** → hiển thị CTA "Liên hệ hỗ trợ Zalo 0981897779".
+  - Khi `paid` → `router.replace("/dashboard?paid=<licenseId>")`.
+- `app/dashboard/page.tsx` đọc `searchParams.paid` / `?msg` → render success banner xanh khi vừa thanh toán xong.
+
+**App — License & auto-update:**
+- `main.v2.js::activate-license` thông báo lỗi rõ tiếng Việt khi `licensePublicKeyPem` thiếu.
+- `main.v2.js::license-heartbeat` cũng có guard tương tự — không spam server khi config sai.
+- `bootLicenseRuntime()` log warning vào `app-runtime.log` nếu `licensePublicKeyPem` rỗng hoặc `config.json.github.owner|repo` còn `REPLACE_*` placeholder.
+
+**Repo housekeeping:**
+- `app/package.json` truncate lần thứ 3 → restore lại đầy đủ (giữ `customSign.js`, `installer.nsh`, NSIS shortcut config user mới thêm).
+- `web/lib/supabase.ts` truncate → restore.
+
+### Chưa xong (cần làm tiếp)
+
+1. Migration `0002_web_sessions.sql` chưa chạy lên Supabase production.
+2. App chưa pull session từ `web_sessions` về (chưa có `/api/web-sessions` GET + IPC + UI).
+3. Email "key sắp hết hạn" chưa wire (Resend cron).
+4. `/api/admin/revoke` chưa có.
+5. `/changelog` từ GitHub Releases API chưa làm.
+6. Offline grace period 30 phút cho heartbeat chưa làm.
+7. `/terms`, `/privacy` vẫn placeholder.
+8. `installer.nsh` + `customSign.js` reference trong package.json nhưng chưa có file → electron-builder fail.
+
+### Rủi ro còn lại (production)
+
+- Memo SePay nếu khách gõ sai nặng (mất `ZM` đầu) → rơi pending, admin xử thủ công. Đã ghi log payment.
+- Heartbeat 30s — Vercel cold-start chậm > 30s có thể gây kicked giả. Cần monitor.
+- `app-runtime.log` không rotate.
+- PaymentWatcher phụ thuộc cookie `sb-access-token` còn hạn (1h sau login).
+
+### Bước tiếp ưu tiên cao nhất (P0 — không launch được nếu thiếu)
+
+1. [MANUAL] Tạo Supabase project, paste `0001_init.sql` + `0002_web_sessions.sql`.
+2. [DONE] File build reference đã đủ: `app/installer.nsh` tồn tại, đã thêm `app/customSign.js` no-op để electron-builder không fail vì thiếu file.
+3. [DONE/MANUAL] Đã paste public key vào `config.json::licensePublicKeyPem`. Còn bước manual: đảm bảo `LICENSE_TOKEN_PRIVATE_KEY` trên Vercel phải là private key cùng cặp với public key đã commit.
+4. [DONE] Đã replace placeholder `REPLACE_GITHUB_OWNER/REPO` trong `app/package.json::build.publish` + `config.json::github` thành `lenguyenkieuhan1k-hue/PCZaloClone`.
+
+### P1 (cần để khách dùng smooth)
+
+5. `/api/web-sessions` GET + IPC `pull-extension-sessions` + UI button.
+6. Soạn `/terms` + `/privacy` tiếng Việt thật.
+7. `/api/admin/revoke` + UI nút Revoke trong `/admin`.
+
+### P2 (nice to have)
+
+8. `/changelog` từ GitHub Releases API.
+9. Email reminder "key sắp hết hạn 7 ngày".
+10. Offline grace period heartbeat.
+11. Sentry crash report.
+
+### Verification đã làm trong đợt này
+
+- `node --check` 5 file Electron active: PASS.
+- `python3 -c "json.load"` 4 file JSON config: PASS.
+- `tsc --noEmit -p tsconfig.check.json` (exclude stale `.next/types`): PASS — 0 lỗi.
+- Manual code review: tất cả nhánh idempotency của sepay-webhook trả 2xx (xác minh bằng đọc code).
+
 ## 1. Trạng thái hiện tại
 
 - App Electron tên **ZaX** (`app/package.json` → `"name": "ZaX"`, version 26.3.1).
@@ -476,225 +547,4 @@ Việc cụ thể, làm theo thứ tự:
 
 ### Phase 2 — Hệ thống license với single‑session
 
-**Mục tiêu:** Khách mua key → activate trên 1 máy. Nếu cùng key activate trên máy 2 → máy 1 tự logout. Đăng nhập web bằng Google.
-
-**Quy tắc nghiệp vụ:**
-- 1 key = 1 active session tại một thời điểm.
-- Activate máy mới → tự kick máy cũ (không cần khách thao tác gì).
-- Mất mạng tạm thời (< 30 phút) không bị kick.
-- Hết hạn license → app khoá tính năng, vẫn cho gia hạn từ trong app.
-
-**Cơ chế kỹ thuật:**
-
-1. Mỗi license trong DB có trường `active_session_id` (UUID, có thể null).
-2. App khi activate gửi `{key, device_fingerprint}` lên server.
-3. Server kiểm key còn sống → tạo `session_id` mới → ghi đè `active_session_id` của license → trả token (Ed25519‑signed) cho client kèm `session_id` đó.
-4. Client lưu token, heartbeat 30s/lần lên server kèm `session_id`.
-5. Server so `session_id` từ client với `active_session_id` hiện tại trong DB:
-   - Khớp → trả `ok`.
-   - Khác → trả `kicked` → client đóng Zalo + popup "Tài khoản đang dùng ở máy khác. Đăng nhập lại để dùng ở máy này".
-6. Offline grace: nếu client mất mạng, dùng được tiếp 30 phút (chỉ check expiry trong token cached). Quá grace → app yêu cầu mạng.
-7. Token có chữ ký server → client không tự sửa expiry được.
-
-**Device fingerprint PC:** SHA‑256 của `MachineGuid` (HKLM\SOFTWARE\Microsoft\Cryptography) + UUID mainboard (`wmic csproduct get UUID`) + serial ổ C. Không dùng MAC vì thay đổi liên tục.
-
-**Backend:** Supabase Postgres + Auth (Google OAuth) + Edge Functions.
-
-**Bảng dữ liệu chính:**
-- `users` — Google ID, email, ngày tạo.
-- `licenses` — `key`, `user_id`, `plan`, `expires_at`, `active_session_id`, `status` (active/revoked/expired).
-- `sessions` — `id`, `license_id`, `device_fingerprint`, `device_name`, `last_seen_at`, `created_at`.
-- `payments` — `user_id`, `license_id`, `amount`, `method`, `sepay_txn_id`, `status`.
-- `audit_log` — mọi activate / kick / transfer để chống tranh chấp.
-
-### Phase 3 — Web bán hàng + dashboard
-
-**Mục tiêu:** Khách tự mua key, tự quản lý license, không cần liên hệ thủ công.
-
-- Landing trang chủ + bảng giá (1 tháng / 6 tháng / 1 năm hoặc tuỳ).
-- Đăng nhập **bằng Google** (Supabase Auth lo hết).
-- Khách bấm mua → web hiển thị QR SePay → khách chuyển khoản → SePay webhook về web → web auto sinh key + gửi về email khách.
-- Dashboard khách: xem key của mình, xem thiết bị đang active, lịch sử thiết bị từng dùng, gia hạn key.
-- Trang admin riêng cho bạn: doanh thu, list khách, search key, ban/revoke key.
-
-### Phase 4 — Code signing + auto‑update + chạy production
-
-- **Mua EV code signing cert** (SSL.com hoặc Sectigo, ~$330/năm). Bắt buộc — không có cert thì SmartScreen của Windows chặn installer, mất 30‑50% khách bước cài.
-- **Setup auto‑update**: file installer đã ký + `latest.yml` host trên Cloudflare R2 (gần như miễn phí). `electron-updater` tự download bản mới khi user mở app.
-- **Soạn ToS + Privacy + Refund policy** (template tôi sẽ soạn). Có clause: "tính năng phụ thuộc Zalo, nếu Zalo block thì extend license thay vì refund full".
-- **Beta đóng** ~30 user 2‑3 tuần để bắt edge case (antivirus false positive, DPAPI lạ, Zalo update).
-- **Nộp installer lên VirusTotal + Microsoft submission portal + Kaspersky/Bitdefender** xin whitelist.
-- Public launch.
-
-### Phase 5 — Mobile (làm sau, không song song)
-
-- **Chỉ Android.** iOS bỏ qua vì sandbox không cho clone.
-- License system tái dùng nguyên (cùng API, chỉ đổi cách lấy fingerprint: SSAID + Build hash).
-- Logic clone Zalo Android phải làm lại từ đầu — không tái dùng được code PC.
-- Chỉ động đến mobile sau khi PC chạy ổn 2‑3 tháng và có doanh thu đều.
-
-## 4. Stack tổng
-
-| Hạng mục | Lựa chọn |
-|---|---|
-| Frontend web | Next.js trên Vercel |
-| Backend | Supabase (Postgres + Auth + Edge Functions) |
-| Đăng nhập | Google OAuth qua Supabase Auth |
-| Thanh toán VN | SePay (QR chuyển khoản, webhook) |
-| Thanh toán quốc tế (nếu cần) | Paddle (tự xử VAT giùm) |
-| Email | Resend |
-| Crash report | Sentry |
-| CDN cho installer | Cloudflare R2 |
-| Code signing | SSL.com EV cert |
-| App PC | Electron (giữ nguyên) |
-| App mobile (sau) | Tạm chưa quyết — có thể React Native |
-
-## 5. Chi phí cố định ước tính
-
-| Khoản | Tiền |
-|---|---|
-| Code signing cert (1 năm) | ~$330 (~8 triệu ₫) |
-| Domain | ~250k ₫/năm |
-| Vercel / Supabase / Sentry / Resend / SePay | 0 ₫ giai đoạn đầu (free tier đủ vài nghìn user) |
-| Cloudflare R2 (host installer) | vài chục nghìn ₫/tháng |
-
-→ Khởi đầu **~9 triệu ₫/năm chi phí cố định**, scale dần theo lượng khách.
-
-## 6. Ghi chú quan trọng cần nhớ
-
-- **Khoá `cookieKeyB64`** trong file JSON sao lưu = mật khẩu Zalo. Đối xử y như vậy. Phase 3 sẽ mã hoá file thêm bằng passphrase người dùng.
-- **Zalo có thể update bất kỳ lúc nào** làm chết logic backup. Cần:
-  - Quỹ khẩn cấp đủ refund 1‑2 tháng doanh thu.
-  - ToS clause "extend thay vì refund full khi Zalo block".
-  - Telemetry đầy đủ để biết ngay khi nào hỏng.
-- **`audit_log` lưu mọi thao tác** activate/kick/transfer để chống tranh chấp với khách.
-- **Antivirus rất dễ flag false positive** vì app tạo Windows user + đụng DPAPI + ghi vào DB Chromium → mỗi build mới phải submit whitelist các AV phổ biến.
-- **App yêu cầu admin** → một số khách dùng máy công ty không có quyền admin sẽ không cài được. Cần ghi rõ trên trang bán.
-
-## 7. Phân vai
-
-**Việc Claude (tôi) sẽ làm trong các session tiếp theo:**
-- Viết code tất cả phase trên (app, web, backend).
-- Bạn copy‑paste hoặc duyệt diff.
-- Soạn template ToS / Privacy / Refund.
-- Hướng dẫn từng bước nếu chỗ nào bạn cần thao tác tay.
-
-**Việc bạn phải tự lo, không thể outsource:**
-- Đăng ký các dịch vụ (Supabase, Vercel, Cloudflare, SePay, Sentry, Resend).
-- Mua EV code signing cert (verify danh tính cá nhân/doanh nghiệp).
-- Mua domain.
-- Đăng ký hộ kinh doanh hoặc doanh nghiệp (cần để mở SePay nhận tiền chính danh).
-- Quyết giá bán + chính sách refund cụ thể.
-- Hỗ trợ khách (Zalo / Facebook chat) — giai đoạn đầu phải tự nghe khách than để biết app còn lỗi gì.
-
-## 8. Việc cần làm tiếp ngay sau khi đọc file này
-
-**Để bắt đầu Phase 1 (hoàn thiện app):**
-
-1. Test fix backup/restore vừa làm trên 2 máy thật. Báo lại kết quả.
-2. Trả lời tôi: muốn xử mục nào trước trong Phase 1?
-   - (a) Rà silent fail + log đầy đủ.
-   - (b) Test toàn diện các luồng UI để liệt bug còn sót.
-   - (c) Sửa hardcoded path + sanitize PowerShell.
-
-**Trước khi vào Phase 2 (license + web), bạn cần chuẩn bị:**
-
-- Tài khoản Supabase (supabase.com) — tạo project mới tên `zax-license`.
-- Tài khoản Vercel (vercel.com) — nối GitHub.
-- Mua 1 domain trên Namecheap hoặc PA Vietnam (ví dụ `zax.vn`, `zax.app`).
-- Tài khoản SePay (sepay.vn) — gắn với tài khoản ngân hàng nhận tiền.
-
-Khi nào đến Phase 2 tôi sẽ nhắc lại.
-
-## 8b. Bảng giá đã chốt (lưu để dùng cho Phase 3)
-
-> Các gói bán theo số lượng tài khoản Zalo cùng lúc, không giới hạn thời gian giữa các gói trong cùng tier.
-
-| Gói | 1 tháng | 3 tháng | 6 tháng | 1 năm |
-|---|---|---|---|---|
-| 6 Zalo | 199k | 499k | 999k | 1499k |
-| 15 Zalo | 399k | 799k | 1499k | 2499k |
-| 25 Zalo | 499k | 999k | 1999k | 2999k |
-| 50 Zalo | 799k | 1499k | 2999k | 3999k |
-| 100 Zalo | 999k | 1999k | 3999k | 5999k |
-
-**Liên hệ bán hàng / hỗ trợ:**
-- SĐT / Zalo: 0981897779
-- Telegram: @zalomask
-
-## 8c. Trạng thái dự án — chốt sổ ngày 2026-05-07
-
-### Đã làm xong
-
-**Desktop (`app/`):**
-- Multi-account Zalo PC chạy song song qua patch `app.asar` (ổn định từ trước)
-- Privacy shim ẩn typing/seen/received (đã có)
-- Proxy per-profile HTTP/SOCKS5 (đã có)
-- Backup/restore JSON với `cookieKeyB64` (fix DPAPI hôm 2026-05-06)
-- **Mới hôm nay:** Live runtime collector ([app/clone-runtime-collector.js](app/clone-runtime-collector.js)) inject vào MAIN world Zalo, đọc canonical state từ `$$afmc.zStorage` + localStorage thay vì cào file mã hoá
-- **Mới hôm nay:** SessionStore abstraction ([app/session-store.js](app/session-store.js)) + LocalProvider (file) + SupabaseProvider stub
-- **Mới hôm nay:** Format export v4 (cắt v3) — chỉ canonical snapshot + cookies + cookieKeyB64, gọn hơn rất nhiều
-- **Mới hôm nay:** Pin localStorage trong preload trước khi Zalo bundle chạy → diệt race condition `imei`
-- **Mới hôm nay:** Tab "Đồng bộ đám mây" trong UI Electron với nút Ghi seed / Đẩy / Kéo cloud
-- **Mới hôm nay:** Auto-update cơ chế ([app/auto-update.js](app/auto-update.js)) — poll GitHub Releases mỗi giờ, badge "⬆ Bản mới" + modal tải/cài
-- **Mới hôm nay:** Rebrand `ZaX` → `ZaloMask`, homepage `https://zalomask.com`, electron-builder NSIS config
-- **Mới hôm nay:** GitHub Actions [.github/workflows/release.yml](.github/workflows/release.yml) — push tag `v*` → CI build NSIS + tạo Release
-
-**Web (`web/`):**
-- **Mới hôm nay:** Next.js 14 App Router + TypeScript + Tailwind scaffold
-- **Mới hôm nay:** Landing page + bảng giá 5 gói (đọc từ `lib/plans.ts`)
-- **Mới hôm nay:** Checkout page với QR SePay + memo format `ZM <userId8> <tier> <duration>`
-- **Mới hôm nay:** Customer dashboard (license + thiết bị active)
-- **Mới hôm nay:** Admin dashboard (revenue + license + user)
-- **Mới hôm nay:** Google OAuth qua Supabase Auth
-- **Mới hôm nay:** API `/api/activate` (Electron app gọi để activate key, trả Ed25519 token)
-- **Mới hôm nay:** API `/api/heartbeat` (single-session check 30s/lần)
-- **Mới hôm nay:** API `/api/sepay-webhook` (SePay → tạo key + email Resend)
-- **Mới hôm nay:** Supabase migrations 5 bảng + RLS policies + trigger sync auth.users
-- **Mới hôm nay:** Ed25519 license token (zero-deps node:crypto, không phụ thuộc lib JWT)
-- **Mới hôm nay:** Setup README đầy đủ ở `web/README.md`
-
-### Việc tiếp theo (theo thứ tự ưu tiên)
-
-#### Tuần 1 — Lên cloud chạy thật
-
-**Bạn (không thể outsource):**
-1. Tạo GitHub repo public, replace `REPLACE_GITHUB_OWNER`/`REPLACE_GITHUB_REPO` ở 3 chỗ:
-   - `app/package.json` → `build.publish`
-   - `config.json` → `github`
-   - `web/app/page.tsx` → link tải về
-2. Tạo Supabase project `zalomask-prod`, paste `web/supabase/migrations/0001_init.sql` vào SQL Editor.
-3. Trong Supabase Auth → bật Google OAuth (cần Google Cloud Console tạo OAuth client trước).
-4. Mua domain `zalomask.com` (Namecheap hoặc PA Vietnam).
-5. Đăng ký SePay (sepay.vn), gắn ngân hàng nhận tiền, lấy webhook secret.
-6. Đăng ký Resend (resend.com), verify domain `zalomask.com` để gửi email.
-7. Đăng ký Vercel, connect GitHub repo, set Root Directory = `web/`.
-8. Sinh Ed25519 keypair (lệnh ghi trong `web/README.md` mục 3), nạp vào env Vercel.
-9. Paste tất cả env (anon key, service role, SePay secret, Resend key, Ed25519 keys, ADMIN_EMAILS=seringuyen0506@gmail.com) vào Vercel Project Settings.
-10. Deploy `web/` lên Vercel, trỏ DNS `zalomask.com` về Vercel.
-11. Cấu hình SePay webhook URL = `https://zalomask.com/api/sepay-webhook` với header `Authorization: Apikey <secret>`.
-
-**Mình (Claude) sẽ làm tiếp khi xong các bước trên:**
-12. Embed Ed25519 PUBLIC key vào Electron app làm hằng số (`app/license-public-key.js`).
-13. Viết `app/license-client.js`: gọi `/api/activate` lúc nhập key + `/api/heartbeat` mỗi 30s, lưu token offline cho grace 30 phút khi mất mạng.
-14. Thêm tab "License" vào UI Electron: input key, hiển thị trạng thái (active/expired/kicked), nút gia hạn (deeplink sang `zalomask.com/dashboard`).
-15. Gate tính năng `add-clone-profile`: kiểm tra số profile hiện có vs `accountQuota` của license trước khi cho tạo mới.
-
-#### Tuần 2 — Beta đóng
-
-**Bạn:**
-- Mời 20-30 user test (ưu tiên người làm sales/CSKH chạy nhiều account).
-- Thu feedback: bug import sang máy mới, tốc độ load, false positive AV.
-- Nộp installer lên VirusTotal + Microsoft submission portal + Kaspersky/Bitdefender xin whitelist.
-
-**Mình:**
-16. Tích Sentry — bắt crash từ xa (free tier 5k event/tháng).
-17. Soạn ToS + Privacy + Refund policy (template tiếng Việt). Có clause "extend khi Zalo block thay vì refund".
-18. Thêm trang `/terms`, `/privacy`, `/refund` trong web.
-19. Audit log UI cho admin: search theo email, xem lịch sử activate/kick.
-20. Endpoint `/api/admin/revoke` để bạn ban key tay khi gặp scam.
-
-#### Tuần 3-4 — Public launch
-
-**Bạn:**
-- Mua EV code signing cert (SSL.com hoặc Sectigo, ~$330/năm). Dán vào GitHub Actions secret `WIN_CSC_LINK` + `WIN_CSC_KEY_PASSWORD`. Edit `release.yml` enable signing. Lúc đó SmartScreen sẽ không
+**Mục tiêu:** Khách mua key → activate trên 1 máy. Nếu c

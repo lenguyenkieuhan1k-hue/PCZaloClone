@@ -118,6 +118,25 @@ export async function POST(req: NextRequest) {
     .single()
 
   if (error) {
+    const reason = String(error.message || '').toLowerCase()
+    const missingTable = reason.includes('relation') && reason.includes('web_sessions') && reason.includes('does not exist')
+
+    if (missingTable) {
+      await admin.from('audit_log').insert({
+        actor_id: auth.userId,
+        action: 'extension-import-migration-missing',
+        detail: { displayName, cookieCount: cookies.length, zUuid },
+      })
+      return NextResponse.json(
+        {
+          ok: false,
+          code: 'migration-missing',
+          message: 'Thiếu bảng web_sessions trên Supabase production. Hãy chạy migration web/supabase/migrations/0002_web_sessions.sql.',
+        },
+        { status: 503 }
+      )
+    }
+
     // Fallback: log payload size to audit so we can debug missing table issues.
     await admin.from('audit_log').insert({
       actor_id: auth.userId,

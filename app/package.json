@@ -20,8 +20,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "REPLACE_GITHUB_OWNER",
-        "repo": "REPLACE_GITHUB_REPO",
+        "owner": "lenguyenkieuhan1k-hue",
+        "repo": "PCZaloClone",
         "releaseType": "release"
       }
     ],
