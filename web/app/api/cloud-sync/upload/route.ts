@@ -2,6 +2,50 @@ import { NextRequest, NextResponse } from 'next/server'
 import { adminClient, serverClient } from '@/lib/supabase'
 import { verifyLicenseToken } from '@/lib/license-token'
 
+function sanitizeUnicodeString(input: string): string {
+  let out = ''
+  for (let i = 0; i < input.length; i++) {
+    const code = input.charCodeAt(i)
+
+    // JSONB does not accept NUL.
+    if (code === 0) continue
+
+    // High surrogate must be followed by a low surrogate.
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = input.charCodeAt(i + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += input[i] + input[i + 1]
+        i++
+      } else {
+        out += '�'
+      }
+      continue
+    }
+
+    // Unpaired low surrogate.
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      out += '�'
+      continue
+    }
+
+    out += input[i]
+  }
+  return out
+}
+
+function sanitizeJsonValue(value: any): any {
+  if (typeof value === 'string') return sanitizeUnicodeString(value)
+  if (Array.isArray(value)) return value.map((item) => sanitizeJsonValue(item))
+  if (value && typeof value === 'object') {
+    const out: Record<string, any> = {}
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = sanitizeJsonValue(v)
+    }
+    return out
+  }
+  return value
+}
+
 // Xác thực theo 2 mode:
 // 1) Web cookie (dashboard)
 // 2) Electron bearer token (license token signed)
@@ -70,7 +114,7 @@ export async function POST(req: NextRequest) {
   const admin = adminClient()
 
   // Sanitize profiles — bỏ trường quá nhạy cảm không cần thiết khi chuyển máy.
-  const sanitized = profiles.map((p: any) => ({
+  const sanitized = profiles.map((p: any) => sanitizeJsonValue({
     profileName: p.profileName,
     displayName: p.displayName,
     launchMode: p.launchMode,
