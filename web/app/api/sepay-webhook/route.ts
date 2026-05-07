@@ -283,13 +283,31 @@ export async function POST(req: NextRequest) {
   }
 
   // Resolve user from short prefix. Could be ambiguous → record pending.
-  const { data: userMatch } = await admin
+  // Note: UUIDs in Supabase don't work well with .like() on the UUID column type.
+  // We need to cast to text or use client-side filtering.
+  const { data: allUsers, error: usersErr } = await admin
     .from('users')
     .select('id, email, display_name')
-    .ilike('id', `${memo.userId}%`)
-    .limit(10)
+  
+  if (usersErr || !allUsers) {
+    console.error(`[WEBHOOK-DEBUG] ERROR fetching users:`, usersErr)
+    await upsertPaymentRow(admin, sepayTxnId, {
+      amount_vnd: rawAmount,
+      memo: memoText,
+      status: 'pending',
+      tier_id: tier.id,
+      duration: memo.duration,
+    }, existing?.id)
+    return ok({ matched: true, accepted: false, reason: 'user-fetch-error' })
+  }
 
-  console.error(`[WEBHOOK-DEBUG] User lookup for prefix '${memo.userId}': found=${userMatch?.length || 0} matches`)
+  // Match users by UUID prefix (first 8 chars of UUID, case-insensitive)
+  const userMatch = allUsers.filter((u) => {
+    const uuidStart = u.id.replace(/-/g, '').slice(0, 8).toLowerCase()
+    return uuidStart === memo.userId.toLowerCase()
+  })
+
+  console.error(`[WEBHOOK-DEBUG] User lookup for prefix '${memo.userId}': scanning ${allUsers.length} users, found=${userMatch.length} matches`)
   if (userMatch && userMatch.length > 0) {
     console.error(`[WEBHOOK-DEBUG] User match results:`, userMatch.map((u) => ({ id: u.id, email: u.email })))
   }
