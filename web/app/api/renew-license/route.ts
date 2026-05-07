@@ -1,0 +1,103 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { getServerClient, adminClient } from '@/lib/supabase'
+import { PLAN_TIERS, DURATION_DAYS, type Duration } from '@/lib/plans'
+
+interface RenewRequest {
+  license_id: string
+  duration: Duration
+}
+
+export async function POST(req: NextRequest) {
+  const client = getServerClient()
+
+  try {
+    const { data: { user }, error: authError } = await client.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json({ ok: false, message: 'Unauthorized' }, { status: 401 })
+    }
+
+    const body: RenewRequest = await req.json()
+    const { license_id, duration } = body
+
+    if (!license_id || !duration) {
+      return NextResponse.json({ ok: false, message: 'Missing required fields' }, { status: 400 })
+    }
+
+    // Verify license
+    const { data: license, error: licenseError } = await client
+      .from('licenses')
+      .select('id, user_id, key, tier_id, expires_at, account_quota')
+      .eq('id', license_id)
+      .single()
+
+    if (licenseError || !license || license.user_id !== user.id) {
+      return NextResponse.json({ ok: false, message: 'License not found' }, { status: 404 })
+    }
+
+    // Verify tier exists and get price
+    const tier = PLAN_TIERS.find((t) => t.id === license.tier_id)
+    if (!tier) {
+      return NextResponse.json({ ok: false, message: 'Invalid tier' }, { status: 400 })
+    }
+
+    const price = tier.prices[duration]
+    const durationDays = DURATION_DAYS[duration]
+
+    // Calculate new expiry (extend from current expiry, not from today)
+    const currentExpires = new Date(license.expires_at)
+    const newExpires = new Date(currentExpires)
+    newExpires.setDate(newExpires.getDate() + durationDays)
+
+    // Update license expiry
+    const admin = adminClient()
+    const { error: updateError } = await admin
+      .from('licenses')
+      .update({ expires_at: newExpires.toISOString() })
+      .eq('id', license_id)
+
+    if (updateError) {
+      return NextResponse.json({ ok: false, message: 'Failed to renew license' }, { status: 500 })
+    }
+
+    // Record renewal in license_upgrades table
+    await admin.from('license_upgrades').insert({
+      user_id: user.id,
+      old_license_id: license_id,
+      new_license_id: license_id,
+      old_tier_id: license.tier_id,
+      new_tier_id: license.tier_id,
+      upgrade_type: 'renewal',
+      transfer_profile_count: 0,
+      transfer_status: 'completed',
+    })
+
+    // Create payment record
+    const { data: payment } = await admin
+      .from('payments')
+      .insert({
+        user_id: user.id,
+        license_id,
+        tier_id: license.tier_id,
+        duration,
+        amount_vnd: price,
+        method: 'renewal',
+        status: 'pending', // Awaiting SePay payment
+        memo: `Gia hạn ${duration} cho ${license.key}`,
+      })
+      .select()
+      .single()
+
+    return NextResponse.json({
+      ok: true,
+      message: 'Renewal payment initiated',
+      key: license.key,
+      oldExpires: license.expires_at,
+      newExpires: newExpires.toISOString(),
+      price,
+      payment: payment?.id,
+    })
+  } catch (error) {
+    console.error('[/api/renew-license]', error)
+    return NextResponse.json({ ok: false, message: 'Internal server error' }, { status: 500 })
+  }
+}
