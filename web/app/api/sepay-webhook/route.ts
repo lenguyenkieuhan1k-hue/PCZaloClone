@@ -42,7 +42,9 @@ export async function POST(req: NextRequest) {
   if (!expected) return NextResponse.json({ ok: false, message: 'Webhook secret chưa cấu hình' }, { status: 500 })
 
   const auth = req.headers.get('authorization') || ''
-  const provided = auth.replace(/^Apikey\s+/i, '').trim()
+  const headerSecret = auth.replace(/^Apikey\s+/i, '').trim()
+  const querySecret = req.nextUrl.searchParams.get('secret')?.trim() || ''
+  const provided = headerSecret || querySecret
   if (!crypto.timingSafeEqual(Buffer.from(provided.padEnd(64, '0')), Buffer.from(expected.padEnd(64, '0')))) {
     return NextResponse.json({ ok: false, message: 'Sai secret' }, { status: 401 })
   }
