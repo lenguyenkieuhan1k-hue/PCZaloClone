@@ -81,6 +81,450 @@ Ghi chú:
 
 ---
 
+## 0f. Thiết kế License Multi-Key + Renewal (2026-05-07 chiều — tổng hợp cho Claude)
+
+### 📌 Nguyên tắc cốt lõi
+
+**Profiles lưu theo LICENSE_ID, KHÔNG theo tài khoản.**
+
+```
+Google Account (user_id: AAA)
+  │
+  ├─ License 1 (key: ZM-LIC1, tier-6, expires: 2026-06-01)
+  │  └─ Profiles partition "LIC1" ← RIÊNG BIỆT, hoàn toàn cô lập
+  │      ├─ profile_1
+  │      ├─ profile_2 
+  │      └─ (max 6)
+  │
+  ├─ License 2 (key: ZM-LIC2, tier-15, expires: 2026-12-01)
+  │  └─ Profiles partition "LIC2" ← RIÊNG BIỆT (khác hoàn toàn LIC1)
+  │      ├─ profile_a
+  │      ├─ profile_b
+  │      └─ (max 15)
+  │
+  └─ License 3 (key: ZM-LIC3, mua hộ người khác, expires: 2026-05-10)
+     └─ Profiles partition "LIC3" ← RIÊNG BIỆT (của người kia)
+```
+
+**Lợi ích:**
+✅ Mỗi key = sandbox 100% cô lập → đặc biệt an toàn khi bán key hộ người khác  
+✅ Nâng cấp tier = tạo key mới + auto-transfer → dữ liệu migrate toàn vẹn  
+✅ Revoke key = chỉ wipe profiles của key đó → key khác không ảnh hưởng  
+✅ Multi-key = tính tổng quota → user có flexibility  
+
+---
+
+### 🔧 Database Schema (Migration 0004)
+
+#### Bảng `licenses` (modify)
+```sql
+ALTER TABLE licenses ADD COLUMN license_id UUID DEFAULT gen_random_uuid() UNIQUE;
+ALTER TABLE licenses ADD COLUMN parent_license_id UUID REFERENCES licenses(id);
+-- parent_license_id: nếu từ nâng cấp cũ → trỏ tới key cũ (cho admin tracking)
+-- Thêm field tracking cho multi-session prevent
+ALTER TABLE licenses ADD COLUMN active_machine_id TEXT;
+-- active_machine_id: device fingerprint (Electron app instance unique ID)
+```
+
+#### Bảng `profiles` (new)
+```sql
+CREATE TABLE profiles (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id),
+  license_id UUID NOT NULL REFERENCES licenses(id) ON DELETE CASCADE,
+  profile_name TEXT NOT NULL,
+  display_name TEXT,
+  metadata JSONB,  -- fingerprint, proxy, webSession snapshots
+  created_at TIMESTAMP DEFAULT now(),
+  updated_at TIMESTAMP DEFAULT now(),
+  UNIQUE(license_id, profile_name)
+);
+CREATE INDEX idx_profiles_license ON profiles(license_id);
+```
+
+#### Bảng `cloud_backups` (modify)
+```sql
+ALTER TABLE cloud_backups 
+  ADD COLUMN license_id UUID REFERENCES licenses(id);
+
+-- Change unique constraint
+ALTER TABLE cloud_backups 
+  DROP CONSTRAINT cloud_backups_user_id_key,
+  ADD CONSTRAINT cloud_backups_license_key UNIQUE(license_id);
+-- Một backup per license, không share giữa licenses
+```
+
+#### Bảng `license_upgrades` (new tracking)
+```sql
+CREATE TABLE license_upgrades (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL,
+  old_license_id UUID REFERENCES licenses(id),
+  new_license_id UUID REFERENCES licenses(id),
+  upgraded_at TIMESTAMP DEFAULT now(),
+  transfer_status TEXT,  -- 'pending', 'completed', 'failed'
+  transfer_profile_count INT
+);
+```
+
+---
+
+### 📋 Workflow: Purchase → Activate → Nâng cấp / Gia hạn → Revoke
+
+#### **Scenario 1: Mua key mới (tier-6, expires +30 days)**
+
+```
+Web Checkout:
+  user click Tier-6 → SePay payment
+  → webhook POST /api/sepay-webhook
+     → INSERT licenses (key, tier, expires_at, status='active')
+     → email user key + active link
+
+App (Electron):
+  user paste key: ZM-LIC1
+  → POST /api/activate
+     → verify key + check status
+     → create session_id (unique GUID)
+     → UPDATE licenses SET active_session_id=?, active_machine_id=?
+     → IF affected_rows == 0 → key claimed elsewhere, return error "Already active on another machine"
+     → ELSE create license-state.json locally
+     → broadcast license-updated event
+     → show "Activate OK, quota 6 accounts"
+```
+
+---
+
+#### **Scenario 2: Nâng cấp tier (6 → 15 accounts)**
+
+```
+Web Dashboard:
+  user click "Nâng cấp" on ZM-LIC1 (tier-6)
+  → modal: select new tier (tier-10 / tier-15 / tier-25)
+  → show: "Transfer 3 profiles từ ZM-LIC1 → ZM-NEW?"
+  → user confirm
+  → checkout SePay (prorate: full price - already paid for ZM-LIC1)
+
+Server POST /api/upgrade-license:
+  input: { old_license_id, new_tier, duration }
+  1. CREATE new_license (tier, expires = same as old or extended)
+  2. START transaction
+  3. SELECT profiles WHERE license_id = old_license_id
+  4. COPY to new_license_id (INSERT INTO profiles... SELECT with license_id=new)
+  5. INSERT license_upgrades (old_license_id, new_license_id, transfer_status='completed')
+  6. COMMIT
+  7. Email: "Nâng cấp thành công! Key mới: ZM-NEW. Key cũ vẫn active (gia hạn thêm 30 ngày tự động?)"
+  
+App behavior:
+  → User still on ZM-LIC1 in app
+  → Dashboard shows 2 keys: ZM-LIC1 (old tier) + ZM-NEW (new tier, empty)
+  → Optional: "Activate new key?" button → switch to ZM-NEW
+  → Or keep using ZM-LIC1 (profiles still there, quota still 6)
+
+⚠️ Design choice: 
+  - Keep old key active? (user flexibility, but confusing)
+  - OR auto-deactivate old key? (cleaner UX)
+  → PROPOSAL: Show prompt "Auto-deactivate ZM-LIC1?" with grace period 24h
+```
+
+---
+
+#### **Scenario 3: Gia hạn key (extend expiry)**
+
+```
+Web Dashboard:
+  user click "Gia hạn" on ZM-LIC1 (expires 2026-06-01)
+  → modal: select duration (1m / 3m / 6m / 1y)
+  → show: "Gia hạn từ 2026-06-01 → 2026-09-01"
+  → checkout SePay
+
+Server POST /api/renew-license:
+  input: { license_id, duration_days }
+  UPDATE licenses 
+    SET licenseExpiresAt = licenseExpiresAt + interval '${duration_days} days'
+    WHERE id = license_id
+  Email: "Gia hạn thành công! ZM-LIC1 hết hạn: 2026-09-01"
+
+App behavior:
+  → Profiles remain untouched
+  → Quota stay same
+  → Just update expiry in license-state.json
+```
+
+---
+
+#### **Scenario 4: Mua key hộ người khác (resell)**
+
+```
+Web:
+  User A (admin) create license for User B (via admin panel)
+  → form: select tier, set expiry, input email / phone
+  → INSERT licenses (key, status='active', user_id=B_id)
+  → Email to User B: "Bạn nhận key ZM-LIC3 từ User A. Activate tại..."
+
+App:
+  User B paste ZM-LIC3 → activate bình thường
+  → Profiles riêng ở partition LIC3
+  → 100% cô lập với mọi key khác
+```
+
+---
+
+### 🛡️ Edge Cases & Safety Measures
+
+#### **1. Single-session enforcement (anti-concurrent activation)**
+```
+Problem: Machine A activate ZM-LIC1 at 10:00:00
+         Machine B activate ZM-LIC1 at 10:00:00.5ms (race)
+
+Solution:
+  UPDATE licenses 
+    SET active_session_id = NEW_SESSION_ID, active_machine_id = MACHINE_ID
+    WHERE key = ? AND (active_session_id IS NULL OR sessionExpiredAt < now())
+  
+  IF affected_rows == 0:
+    return { ok: false, message: "Key already active elsewhere" }
+  ELSE:
+    return { ok: true, sessionId: NEW_SESSION_ID }
+
+Heartbeat:
+  → If Machine A heartbeat fails 2x → broadcast "license-kicked"
+  → AUTO cloud upload profiles (silent)
+  → Wipe local profiles
+  → Show dialog: "Key deactivated on another machine"
+```
+
+#### **2. Key expiry during active session**
+```
+Problem: Key expires 2026-05-08 14:00
+         User in app at 14:05
+         
+Solution:
+  Heartbeat (every 30s):
+    IF licenseExpiresAt < now():
+      return { status: 'expired' }
+      
+  App on 'expired':
+    → disable "Open profile" button
+    → show notification: "Key expired, renew to continue"
+    → profiles still in filesystem (grace period 7 days)
+    → offer: "Renew now" / "Use another key" / "Backup to cloud"
+```
+
+#### **3. Downgrade + auto-deactivate logic**
+```
+Problem: User has 2 keys active (tier-15 + tier-10)
+         Wants to keep only tier-15
+         
+Solution (optional):
+  Dashboard: show "Deactivate ZM-LIC2?"
+  → send deactivate request to server
+  → Server: UPDATE licenses SET status = 'inactive' WHERE key = ?
+  → App detects via heartbeat → close webWindows for LIC2
+```
+
+#### **4. Profile transfer rollback**
+```
+Problem: Upgrade tier, transfer 10 profiles
+         Network fail after 7 profiles
+         
+Solution:
+  Wrap in DB transaction:
+    BEGIN;
+      INSERT INTO profiles ... (for each profile)
+      UPDATE license_upgrades SET transfer_profile_count = 7
+    ON ERROR:
+      ROLLBACK
+      return error
+    COMMIT;
+  
+  Retry mechanism:
+    → Check license_upgrades.transfer_status = 'pending'
+    → On app reopen: "Resume transfer?" button
+```
+
+#### **5. Offline grace period (7 days)**
+```
+Problem: User activate ZM-LIC1, close app
+         Network down 7 days
+         Open app: heartbeat fails
+         
+Solution:
+  IF offline > 7 days:
+    last_heartbeat_at = 2026-04-30
+    now = 2026-05-10
+    offline_days = 10
+    → disable profile opening
+    → show: "License check overdue, connect to internet"
+    
+  IF offline < 7 days:
+    → allow read-only access
+    → background task: keep retry heartbeat
+```
+
+#### **6. Revoke / chargeback (admin action)**
+```
+Problem: User activate ZM-LIC1, payment charged
+         Chargeback 2 days later
+         
+Solution:
+  Admin dashboard: revoke license
+    → UPDATE licenses SET status = 'revoked' WHERE id = ?
+    → Send event to active sessions → immediate kick
+    → Profiles: grace period 24h (show "Backup to cloud?")
+    → After 24h: auto-delete local profiles
+    → Cloud backup: keep 30 days for admin recovery option
+```
+
+#### **7. Timezone-aware expiry check**
+```
+Problem: License expires 2026-05-08 00:00:00 UTC
+         User thinks still valid (local time 07:00 UTC+7)
+         
+Solution:
+  ✓ Always check server-side (UTC)
+  ✓ Heartbeat: now() >= licenseExpiresAt (UTC comparison)
+  ✓ Dashboard show: "Expires in X days" (visual, localtime OK)
+  ✓ Warning mail: timestamp in UTC + local timezone for clarity
+```
+
+#### **8. Profile name collision during transfer**
+```
+Problem: ZM-OLD has "profile_1"
+         ZM-NEW has "profile_1" (unlikely but possible)
+         Transfer attempt → collision
+         
+Solution:
+  During transfer:
+    IF profile already exists:
+      rename source → "profile_1_upgraded" / "profile_1_v2" / etc
+    OR ask user: "Overwrite existing profile_1 in ZM-NEW?"
+```
+
+#### **9. Concurrent modifications (profile add while upgrading)**
+```
+Problem: User create new profile while upgrade transfer is in-progress
+         
+Solution:
+  ✓ Lock profiles table during transfer
+  ✓ Or: transfer only "committed" profiles (snapshot at start)
+  ✓ New profiles created after transfer start → skip in transfer
+```
+
+#### **10. Free tier vs Paid transition**
+```
+Problem: User on free tier (1 profile) long time
+         Buy ZM-NEW (tier-6)
+         
+Solution:
+  Free tier = special license_id: "TIER_FREE"
+  When activate paid key → show: "Migrate 1 free profile to ZM-NEW?"
+  If yes: transfer free profile to LIC1
+  If no: keep separate (user has both free + paid)
+  
+  Recommendation: Prompt "Delete free profile? Keep ZM-NEW."
+```
+
+---
+
+### 🖼️ UI Changes for Web
+
+#### Dashboard License Management
+```
+┌─────────────────────────────────────────────┐
+│ 🔑 Các khóa của bạn (Total quota: 16/31)    │
+├────┬──────┬────────┬────────┬────────┬─────┤
+│Key │Tier  │Quota   │Profiles│Expires │Act  │
+├────┼──────┼────────┼────────┼────────┼─────┤
+│ZM-1│Tier-6│6       │3/6     │6 ngày  │...  │
+├────┼──────┼────────┼────────┼────────┼─────┤
+│ZM-2│Tier-1│15      │0/15    │60 ngày │...  │
+├────┼──────┼────────┼────────┼────────┼─────┤
+│ZM-3│Tier-2│4      │4/4     │EXPIRED │...  │
+└────┴──────┴────────┴────────┴────────┴─────┘
+
+Each row "..." menu:
+  - [Nâng cấp]  → select new tier → checkout
+  - [Gia hạn]   → select duration → checkout
+  - [Xem dữ liệu] → list 3 profiles
+  - [Deactivate]
+  - [Huỷ]       → confirm + wipe
+```
+
+#### Renewal Modal
+```
+┌──────────────────────────────────┐
+│ Gia hạn ZM-LIC1                  │
+├──────────────────────────────────┤
+│ Hiện tại: 2026-06-01 14:30       │
+│                                  │
+│ Chọn thời hạn:                   │
+│ ○ 1 tháng  (50,000đ)            │
+│ ○ 3 tháng  (120,000đ)           │
+│ ○ 6 tháng  (200,000đ)           │
+│ ○ 1 năm    (300,000đ)           │
+│                                  │
+│ Mới sẽ là: 2026-09-01 14:30      │
+│                                  │
+│ [Thanh toán]  [Hủy]              │
+└──────────────────────────────────┘
+```
+
+#### Upgrade Modal
+```
+┌──────────────────────────────────┐
+│ Nâng cấp ZM-LIC1                 │
+├──────────────────────────────────┤
+│ Hiện tại: Tier-6 (6 accounts)    │
+│                                  │
+│ Nâng lên:                        │
+│ ○ Tier-10 (10 accounts) +50k    │
+│ ○ Tier-15 (15 accounts) +100k   │
+│ ○ Tier-25 (25 accounts) +150k   │
+│                                  │
+│ ✓ Transfer 3 profiles cũ        │
+│   profile_1, profile_2, profile_3
+│                                  │
+│ [Thanh toán]  [Hủy]              │
+└──────────────────────────────────┘
+```
+
+---
+
+### 🔌 API Routes (for Claude to implement)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| POST | `/api/upgrade-license` | Nâng cấp tier (create new key + transfer) |
+| POST | `/api/renew-license` | Gia hạn key (extend expiry) |
+| POST | `/api/deactivate-license` | Deactivate key (manual) |
+| DELETE | `/api/revoke-license` | Admin revoke (force deactivate + wipe) |
+| GET | `/api/licenses` | List all user's licenses |
+| GET | `/api/license/:id/profiles` | List profiles for a license |
+
+---
+
+### 🎯 Implementation Priority (for Claude)
+
+**Phase 1 (Critical):**
+- Migration 0004 (profiles table + license_id field)
+- Update `/api/activate` → single-session check, machine_id track
+- Update heartbeat → check expiry + machine conflict
+- App: load profiles per license_id (not per user)
+
+**Phase 2 (Important):**
+- `/api/upgrade-license` + transfer logic (atomic transaction)
+- `/api/renew-license`
+- Dashboard UI: license table + action buttons
+- Upgrade/Renewal modal + checkout flow
+
+**Phase 3 (Polish):**
+- `/api/deactivate-license`
+- Admin revoke UI
+- Grace period logic (7 days offline, 24h post-revoke)
+- Error handling + retry for transfer failures
+
+---
+
 ## 0c. Cập nhật nhanh (2026-05-08)
 
 ### Đã hoàn thành trong app desktop (`app/main.v2.js`, `renderer-v2.js`)
