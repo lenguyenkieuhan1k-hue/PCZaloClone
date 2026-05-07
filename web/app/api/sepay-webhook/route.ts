@@ -88,16 +88,106 @@ export async function POST(req: NextRequest) {
   // -- Idempotency check: have we already processed this transaction? --
   const { data: existing } = await admin
     .from('payments')
-    .select('id, status, license_id, sepay_txn_id')
+    .select('id, status, license_id, sepay_txn_id, method, user_id')
     .eq('sepay_txn_id', sepayTxnId)
     .maybeSingle()
 
   if (existing) {
+    // Handle upgrade payment
+    if (existing.method === 'upgrade' && existing.status === 'pending') {
+      // Activate the new license
+      const { data: newLicense } = await admin
+        .from('licenses')
+        .update({ status: 'active' })
+        .eq('id', existing.license_id)
+        .select('id, key, tier_id, duration, expires_at')
+        .single()
+
+      // Mark payment as paid
+      await admin.from('payments').update({ status: 'paid', paid_at: new Date().toISOString() }).eq('id', existing.id)
+
+      // Get user for email
+      const { data: user } = await admin.from('users').select('email, display_name').eq('id', existing.user_id).single()
+      
+      // Send email — best effort
+      try {
+        if (process.env.RESEND_API_KEY && user) {
+          const resend = new Resend(process.env.RESEND_API_KEY)
+          const tier = PLAN_TIERS.find((t) => t.id === newLicense?.tier_id)
+          await resend.emails.send({
+            from: process.env.RESEND_FROM_EMAIL || 'ZaloMask <noreply@zalomask.com>',
+            to: user.email,
+            subject: 'Nâng cấp License ZaloMask thành công',
+            html: `<p>Chào ${user.display_name || ''},</p>
+                   <p>Nâng cấp license của bạn đã hoàn tất! 🎉</p>
+                   <p>Key mới: <strong style="font-family:monospace">${newLicense?.key}</strong></p>
+                   <p>Gói: ${tier?.label} • Hết hạn: ${new Date(newLicense?.expires_at || '').toLocaleDateString('vi-VN')}</p>
+                   <p>Cập nhật key trong app: Cài đặt → License → xoá key cũ → dán key mới.</p>`,
+          })
+        }
+      } catch {
+        // ignore
+      }
+
+      return ok({ duplicate: true, licenseId: existing.license_id })
+    }
+
+    // Handle renewal payment
+    if (existing.method === 'renewal' && existing.status === 'pending') {
+      // Get current license to calculate new expiry
+      const { data: currentLicense } = await admin
+        .from('licenses')
+        .select('id, key, tier_id, duration, expires_at')
+        .eq('id', existing.license_id)
+        .single()
+
+      if (currentLicense) {
+        const days = DURATION_DAYS[currentLicense.duration as Duration]
+        const currentExpires = new Date(currentLicense.expires_at)
+        const newExpires = new Date(currentExpires)
+        newExpires.setDate(newExpires.getDate() + days)
+
+        // Update license expiry
+        await admin
+          .from('licenses')
+          .update({ expires_at: newExpires.toISOString() })
+          .eq('id', existing.license_id)
+
+        // Mark payment as paid
+        await admin.from('payments').update({ status: 'paid', paid_at: new Date().toISOString() }).eq('id', existing.id)
+
+        // Get user for email
+        const { data: user } = await admin.from('users').select('email, display_name').eq('id', existing.user_id).single()
+        
+        // Send email — best effort
+        try {
+          if (process.env.RESEND_API_KEY && user) {
+            const resend = new Resend(process.env.RESEND_API_KEY)
+            const tier = PLAN_TIERS.find((t) => t.id === currentLicense.tier_id)
+            await resend.emails.send({
+              from: process.env.RESEND_FROM_EMAIL || 'ZaloMask <noreply@zalomask.com>',
+              to: user.email,
+              subject: 'Gia hạn License ZaloMask thành công',
+              html: `<p>Chào ${user.display_name || ''},</p>
+                     <p>Gia hạn license của bạn đã hoàn tất! ✓</p>
+                     <p>Key: <strong style="font-family:monospace">${currentLicense.key}</strong></p>
+                     <p>Gói: ${tier?.label} • Hạn mới: ${newExpires.toLocaleDateString('vi-VN')}</p>
+                     <p>License sẽ tự động cập nhật trong app.</p>`,
+            })
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      return ok({ duplicate: true, licenseId: existing.license_id })
+    }
+
+    // Handle existing new purchase payment
     if (existing.status === 'paid' && existing.license_id) {
       return ok({ duplicate: true, licenseId: existing.license_id })
     }
-    // pending / failed — let it fall through and reprocess (user may have
-    // topped up). We'll update the row in place instead of inserting again.
+    // pending / failed — let it fall through and reprocess (user may have topped up)
   }
 
   const memo = parseMemo(String(payload.content || payload.description || ''))

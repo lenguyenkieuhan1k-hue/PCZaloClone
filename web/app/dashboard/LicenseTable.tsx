@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { formatVnd, DURATION_LABEL, DURATION_DAYS, type Duration } from '@/lib/plans'
 
 interface License {
@@ -22,6 +23,7 @@ interface LicenseTableProps {
 }
 
 export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTableProps) {
+  const router = useRouter()
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [showRenewModal, setShowRenewModal] = useState<string | null>(null)
   const [showUpgradeModal, setShowUpgradeModal] = useState<string | null>(null)
@@ -50,8 +52,8 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
       }
 
       setShowRenewModal(null)
-      alert(`Gia hạn ${renewDuration} thành công!\nHạn mới: ${new Date(data.newExpires).toLocaleDateString('vi-VN')}`)
-      onLicensesUpdate?.()
+      // Redirect to renewal checkout page
+      router.push(`/checkout/renew/${data.licenseId}`)
     } catch (err) {
       setError('Lỗi kết nối')
     } finally {
@@ -85,8 +87,8 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
       }
 
       setShowUpgradeModal(null)
-      alert(`Nâng cấp thành công!\nKey mới: ${data.newKey}\nTransfer ${data.transferCount} profiles`)
-      onLicensesUpdate?.()
+      // Redirect to upgrade checkout page
+      router.push(`/checkout/upgrade/${data.newLicenseId}`)
     } catch (err) {
       setError('Lỗi kết nối')
     } finally {
