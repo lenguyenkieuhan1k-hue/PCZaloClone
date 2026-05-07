@@ -346,7 +346,7 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
                   className="mt-2 w-full p-2 border border-gray-300 rounded-lg"
                 >
                   <option value="">-- Chọn --</option>
-                  <option value="tier-test-1k">Tier-Test (2 Zalo) - 1.000đ</option>
+                  <option value="tier-test-1k">Tier-Test (2 Zalo) - 3.000đ</option>
                   <option value="tier-10">Tier-10 (10 Zalo)</option>
                   <option value="tier-15">Tier-15 (15 Zalo)</option>
                   <option value="tier-25">Tier-25 (25 Zalo)</option>
