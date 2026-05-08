@@ -42,45 +42,42 @@ function parseProxyString(input) {
     body = body.slice(protoMatch[0].length)
   }
 
-  let authPart = ''
-  let hostPortPart = body
-  const at = body.lastIndexOf('@')
-  if (at > 0) {
-    authPart = body.slice(0, at)
-    hostPortPart = body.slice(at + 1)
-  }
-
   let host = ''
   let port = 0
-  const hostPort = hostPortPart.split(':')
-  if (hostPort.length >= 2) {
-    port = Number(hostPort.pop())
-    host = hostPort.join(':').trim()
-  }
-
   let username = ''
   let password = ''
-  if (authPart.includes(':')) {
-    const authTokens = authPart.split(':')
-    username = (authTokens.shift() || '').trim()
-    password = authTokens.join(':').trim()
-  } else if (authPart) {
-    username = authPart.trim()
-  }
 
-  if (!host || !port || Number.isNaN(port)) {
+  const at = body.lastIndexOf('@')
+  if (at > 0) {
+    const authPart = body.slice(0, at)
+    const hostPortPart = body.slice(at + 1)
+
+    const hostPort = hostPortPart.split(':')
+    if (hostPort.length >= 2) {
+      port = Number(hostPort.pop())
+      host = hostPort.join(':').trim()
+    }
+
+    if (authPart.includes(':')) {
+      const authTokens = authPart.split(':')
+      username = (authTokens.shift() || '').trim()
+      password = authTokens.join(':').trim()
+    } else {
+      username = authPart.trim()
+    }
+  } else {
     const tokens = body.split(':')
     if (tokens.length >= 2) {
       host = (tokens.shift() || '').trim()
       port = Number(tokens.shift())
-      if (tokens.length >= 2) {
-        username = tokens.shift().trim()
+      if (tokens.length >= 1) {
+        username = (tokens.shift() || '').trim()
         password = tokens.join(':').trim()
       }
     }
   }
 
-  if (!host || !port || Number.isNaN(port)) return null
+  if (!host || Number.isNaN(port) || port < 1 || port > 65535) return null
 
   return {
     protocol,
@@ -831,7 +828,11 @@ function bind() {
   $('btnAddAccount').addEventListener('click', openAddModal)
   $('modalClose').addEventListener('click', closeAddModal)
   $('modalCancel').addEventListener('click', closeAddModal)
-  $('modalOverlay').addEventListener('click', (e) => { if (e.target === $('modalOverlay')) closeAddModal() })
+  $('modalOverlay').addEventListener('click', (e) => {
+    if (e.target !== $('modalOverlay')) return
+    const input = $(lastModalFocusId) || $('inputDisplayName')
+    if (input && typeof input.focus === 'function') input.focus()
+  })
   $('modalOverlay').addEventListener('focusin', (e) => {
     const target = e.target
     if (!target || !target.id) return
@@ -883,7 +884,11 @@ function bind() {
 
   $('proxyClose').addEventListener('click', closeProxyModal)
   $('proxyCancel').addEventListener('click', closeProxyModal)
-  $('proxyOverlay').addEventListener('click', (e) => { if (e.target === $('proxyOverlay')) closeProxyModal() })
+  $('proxyOverlay').addEventListener('click', (e) => {
+    if (e.target !== $('proxyOverlay')) return
+    const input = $('proxyRaw') || $('proxyHost')
+    if (input && typeof input.focus === 'function') input.focus()
+  })
   $('proxyEnabled').addEventListener('change', syncProxyUi)
   $('proxyAuthEnabled').addEventListener('change', syncProxyUi)
   $('proxyRaw').addEventListener('blur', () => {
