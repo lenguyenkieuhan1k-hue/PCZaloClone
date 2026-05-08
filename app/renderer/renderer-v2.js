@@ -200,26 +200,22 @@ function isModalOpen() {
 
 function stopModalFocusGuard() {
   if (modalFocusTimer) {
-    clearInterval(modalFocusTimer)
+    clearTimeout(modalFocusTimer)
     modalFocusTimer = null
   }
 }
 
 function startModalFocusGuard() {
   stopModalFocusGuard()
-  modalFocusTimer = setInterval(() => {
-    const overlay = $('modalOverlay')
-    if (!overlay || overlay.classList.contains('hidden')) {
-      stopModalFocusGuard()
-      return
-    }
+  const overlay = $('modalOverlay')
+  if (!overlay || overlay.classList.contains('hidden')) return
+  modalFocusTimer = setTimeout(() => {
+    modalFocusTimer = null
     const active = document.activeElement
     if (active && overlay.contains(active)) return
     const preferred = $(lastModalFocusId) || $('inputDisplayName')
-    if (preferred && typeof preferred.focus === 'function') {
-      preferred.focus()
-    }
-  }, 220)
+    if (preferred && typeof preferred.focus === 'function') preferred.focus()
+  }, 160)
 }
 
 function scheduleRefresh(options = {}) {
