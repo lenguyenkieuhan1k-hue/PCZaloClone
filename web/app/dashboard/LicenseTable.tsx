@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { formatVnd, DURATION_LABEL, DURATION_DAYS, type Duration } from '@/lib/plans'
+import { formatVnd, DURATION_LABEL, PLAN_TIERS, type Duration } from '@/lib/plans'
 
 interface License {
   id: string
@@ -22,6 +22,13 @@ interface LicenseTableProps {
   onLicensesUpdate?: () => void
 }
 
+const DURATION_RANK: Record<Duration, number> = {
+  '1m': 1,
+  '3m': 2,
+  '6m': 3,
+  '1y': 4,
+}
+
 export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTableProps) {
   const router = useRouter()
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -36,8 +43,33 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
   const [error, setError] = useState<string>('')
 
   const isExpired = (license: License) => new Date(license.expires_at) < new Date()
+  const getLicenseById = (id: string | null) => licenses.find((l) => l.id === id)
+
+  const getUpgradeRuleError = (license: License, tierId: string, duration: Duration): string | null => {
+    const currentTier = PLAN_TIERS.find((t) => t.id === license.tier_id)
+    const targetTier = PLAN_TIERS.find((t) => t.id === tierId)
+    if (!currentTier || !targetTier) return 'Tier không hợp lệ.'
+
+    const tierUp = targetTier.accountQuota > currentTier.accountQuota
+    const sameTier = targetTier.id === currentTier.id
+    const longerDuration = DURATION_RANK[duration] > DURATION_RANK[license.duration]
+
+    if (tierUp) return null
+    if (sameTier && longerDuration) return null
+    return 'Chỉ được nâng cấp lên gói cao hơn, hoặc cùng gói nhưng thời hạn dài hơn hiện tại.'
+  }
 
   const handleRenew = async (licenseId: string) => {
+    const license = getLicenseById(licenseId)
+    if (!license) {
+      setError('Không tìm thấy license.')
+      return
+    }
+    if (!isExpired(license)) {
+      setError('Gia hạn chỉ khả dụng khi key đã hết hạn.')
+      return
+    }
+
     setLoading(true)
     setError('')
     try {
@@ -64,8 +96,20 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
   }
 
   const handleUpgrade = async (licenseId: string) => {
+    const license = getLicenseById(licenseId)
+    if (!license) {
+      setError('Không tìm thấy license.')
+      return
+    }
+
     if (!upgradeTier) {
       setError('Chọn gói nâng cấp')
+      return
+    }
+
+    const ruleError = getUpgradeRuleError(license, upgradeTier, upgradeDuration)
+    if (ruleError) {
+      setError(ruleError)
       return
     }
 
@@ -99,6 +143,16 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
   }
 
   const handleDeactivate = async (licenseId: string) => {
+    const license = getLicenseById(licenseId)
+    if (!license) {
+      setError('Không tìm thấy license.')
+      return
+    }
+    if (license.status !== 'active') {
+      setError('Chỉ có thể huỷ key đang active.')
+      return
+    }
+
     setLoading(true)
     setError('')
     try {
@@ -115,7 +169,8 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
       }
 
       setShowDeactivateModal(null)
-      alert(`License đã huỷ bỏ.\n\n⚠️ Profiles sẽ bị xoá sau 24h.\nBạn vẫn có thể khôi phục từ đám mây trong thời gian này.`)
+      const deleteAt = data.deleteAfter ? new Date(data.deleteAfter).toLocaleString('vi-VN') : '24 giờ tới'
+      alert(`Đã huỷ key thành công.\n\nProfiles liên kết: ${data.profileCount || 0}\nThời điểm xoá dự kiến: ${deleteAt}\n\nBạn vẫn có thể backup/khôi phục cloud trước thời điểm này.`)
       onLicensesUpdate?.()
     } catch (err) {
       setError('Lỗi kết nối')
@@ -132,6 +187,13 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
       </div>
     )
   }
+
+  const renewTarget = getLicenseById(showRenewModal)
+  const upgradeTarget = getLicenseById(showUpgradeModal)
+  const deactivateTarget = getLicenseById(showDeactivateModal)
+  const upgradeRuleError = upgradeTarget && upgradeTier
+    ? getUpgradeRuleError(upgradeTarget, upgradeTier, upgradeDuration)
+    : null
 
   return (
     <div className="mt-4 space-y-4">
@@ -197,29 +259,49 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
               </div>
 
               <div className="pt-4 flex flex-wrap gap-2">
-                {!isExpired(license) && (
+                {license.status === 'active' && (
                   <>
                     <button
-                      onClick={() => setShowUpgradeModal(license.id)}
+                      onClick={() => {
+                        setError('')
+                        setUpgradeTier(license.tier_id)
+                        setUpgradeDuration(license.duration)
+                        setShowUpgradeModal(license.id)
+                      }}
                       className="px-4 py-2 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 text-sm font-medium"
                     >
                       Nâng cấp tier
                     </button>
                     <button
-                      onClick={() => setShowRenewModal(license.id)}
-                      className="px-4 py-2 rounded-lg bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 text-sm font-medium"
+                      onClick={() => {
+                        setError('')
+                        setRenewDuration('1m')
+                        setShowRenewModal(license.id)
+                      }}
+                      className="px-4 py-2 rounded-lg bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                      disabled={!isExpired(license)}
+                      title={!isExpired(license) ? 'Chỉ gia hạn khi key đã hết hạn' : 'Gia hạn key đã hết hạn'}
                     >
                       Gia hạn
                     </button>
                   </>
                 )}
                 <button
-                  onClick={() => setShowDeactivateModal(license.id)}
-                  className="px-4 py-2 rounded-lg bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 text-sm font-medium"
+                  onClick={() => {
+                    setError('')
+                    setDeactivateReason('no-longer-needed')
+                    setShowDeactivateModal(license.id)
+                  }}
+                  className="px-4 py-2 rounded-lg bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={license.status !== 'active'}
+                  title={license.status !== 'active' ? 'Chỉ huỷ được key đang active' : 'Huỷ bỏ key'}
                 >
                   Huỷ bỏ
                 </button>
               </div>
+              {!isExpired(license) && license.status === 'active' && (
+                <p className="text-xs text-gray-500">Gia hạn chỉ mở khi key đã hết hạn.</p>
+              )}
             </div>
           )}
         </div>
@@ -231,8 +313,11 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
           <div className="bg-white rounded-2xl max-w-md w-full mx-4 p-6 shadow-xl">
             <h3 className="text-xl font-bold">Gia hạn License</h3>
             <p className="mt-2 text-sm text-gray-600">
-              Key: <span className="font-mono">{licenses.find((l) => l.id === showRenewModal)?.key}</span>
+              Key: <span className="font-mono">{renewTarget?.key}</span>
             </p>
+            <div className="mt-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs">
+              Chỉ cho phép gia hạn khi key đã hết hạn. Nếu key còn hạn, hãy dùng Nâng cấp tier để đổi gói hoặc tăng thời hạn.
+            </div>
 
             <div className="mt-6 space-y-4">
               <div>
@@ -249,6 +334,9 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
                 </select>
               </div>
 
+              {renewTarget && !isExpired(renewTarget) && (
+                <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">Key này chưa hết hạn, chưa thể gia hạn.</div>
+              )}
               {error && <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{error}</div>}
 
               <div className="flex gap-3">
@@ -262,7 +350,7 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
                 <button
                   onClick={() => handleRenew(showRenewModal)}
                   className="flex-1 px-4 py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 font-medium"
-                  disabled={loading}
+                  disabled={loading || !renewTarget || !isExpired(renewTarget)}
                 >
                   {loading ? 'Đang xử lý...' : 'Tiếp tục'}
                 </button>
@@ -278,16 +366,17 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
           <div className="bg-white rounded-2xl max-w-md w-full mx-4 p-6 shadow-xl">
             <h3 className="text-xl font-bold text-red-700">⚠️ Huỷ bỏ License</h3>
             <p className="mt-2 text-sm text-gray-600">
-              Key: <span className="font-mono">{licenses.find((l) => l.id === showDeactivateModal)?.key}</span>
+              Key: <span className="font-mono">{deactivateTarget?.key}</span>
             </p>
 
             <div className="mt-4 p-3 rounded-lg bg-red-50 text-red-800 text-sm">
               <p className="font-semibold">⚠️ Chú ý quan trọng:</p>
               <ul className="mt-2 space-y-1 text-xs">
-                <li>• Tất cả profiles sẽ bị xoá sau 24 giờ</li>
+                <li>• Tất cả profiles của key này sẽ bị xoá sau 24 giờ</li>
                 <li>• Nhưng bạn vẫn có thể khôi phục từ đám mây</li>
                 <li>• Nếu cần, mở lại app trong 24h để huỷ hành động</li>
               </ul>
+              <p className="mt-2 text-xs">Profiles hiện có: <strong>{deactivateTarget?.profileCount || 0}</strong></p>
             </div>
 
             <div className="mt-6 space-y-4">
@@ -334,8 +423,11 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
           <div className="bg-white rounded-2xl max-w-md w-full mx-4 p-6 shadow-xl">
             <h3 className="text-xl font-bold">Nâng cấp Tier</h3>
             <p className="mt-2 text-sm text-gray-600">
-              Key: <span className="font-mono">{licenses.find((l) => l.id === showUpgradeModal)?.key}</span>
+              Key: <span className="font-mono">{upgradeTarget?.key}</span>
             </p>
+            <div className="mt-3 p-3 rounded-lg bg-blue-50 border border-blue-200 text-blue-800 text-xs">
+              Rule: chỉ được chọn gói cao hơn hiện tại, hoặc giữ cùng gói nhưng chọn thời hạn dài hơn.
+            </div>
 
             <div className="mt-6 space-y-4">
               <div>
@@ -346,12 +438,18 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
                   className="mt-2 w-full p-2 border border-gray-300 rounded-lg"
                 >
                   <option value="">-- Chọn --</option>
-                  <option value="tier-test-1k">Tier-Test (2 Zalo) - 3.000đ</option>
-                  <option value="tier-10">Tier-10 (10 Zalo)</option>
-                  <option value="tier-15">Tier-15 (15 Zalo)</option>
-                  <option value="tier-25">Tier-25 (25 Zalo)</option>
-                  <option value="tier-50">Tier-50 (50 Zalo)</option>
-                  <option value="tier-100">Tier-100 (100 Zalo)</option>
+                  {PLAN_TIERS
+                    .filter((tier) => {
+                      if (!upgradeTarget) return false
+                      const currentTier = PLAN_TIERS.find((t) => t.id === upgradeTarget.tier_id)
+                      if (!currentTier) return false
+                      return tier.accountQuota >= currentTier.accountQuota
+                    })
+                    .map((tier) => (
+                      <option key={tier.id} value={tier.id}>
+                        {tier.label} ({tier.accountQuota} Zalo)
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -369,6 +467,8 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
                 </select>
               </div>
 
+              {upgradeRuleError && <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{upgradeRuleError}</div>}
+
               {error && <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{error}</div>}
 
               <div className="flex gap-3">
@@ -382,7 +482,7 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
                 <button
                   onClick={() => handleUpgrade(showUpgradeModal)}
                   className="flex-1 px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-medium"
-                  disabled={loading}
+                  disabled={loading || !!upgradeRuleError || !upgradeTier}
                 >
                   {loading ? 'Đang xử lý...' : 'Tiếp tục'}
                 </button>

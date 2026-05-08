@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
     // Verify license belongs to current user
     const { data: license, error: licErr } = await client
       .from('licenses')
-      .select('id, user_id, key, status, tier_id, profiles_count')
+      .select('id, user_id, key, status, tier_id')
       .eq('id', license_id)
       .single()
 
@@ -53,10 +53,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, message: 'License not found' }, { status: 404 })
     }
 
-    // Prevent deactivating already revoked/expired licenses
+    // Prevent deactivating already non-active licenses
+    if (license.status === 'revoked') {
+      return NextResponse.json(
+        { ok: false, message: 'License này đã huỷ trước đó.' },
+        { status: 400 }
+      )
+    }
     if (license.status !== 'active') {
       return NextResponse.json(
-        { ok: false, message: `Cannot revoke ${license.status} license` },
+        { ok: false, message: `Không thể huỷ key ở trạng thái ${license.status}.` },
         { status: 400 }
       )
     }
@@ -73,6 +79,8 @@ export async function POST(req: NextRequest) {
         status: 'revoked',
         revoked_at: revokedAt,
         delete_after: deleteAfter,
+        active_session_id: null,
+        active_device_name: null,
       })
       .eq('id', license_id)
 
@@ -82,6 +90,19 @@ export async function POST(req: NextRequest) {
         { status: 500 }
       )
     }
+
+    const { count: profileCountRaw } = await admin
+      .from('profiles')
+      .select('id', { count: 'exact', head: true })
+      .eq('license_id', license.id)
+
+    const profileCount = profileCountRaw || 0
+
+    await admin
+      .from('sessions')
+      .update({ ended_at: revokedAt })
+      .eq('license_id', license.id)
+      .is('ended_at', null)
 
     // Get user info for email
     const { data: user } = await admin
@@ -124,9 +145,10 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      message: 'License revoked. Profiles will be deleted after 24h.',
+      message: 'Đã huỷ key. Profiles sẽ bị xoá sau 24 giờ nếu bạn không khôi phục.',
       revokedAt,
-      profileCount: license.profiles_count || 0,
+      deleteAfter,
+      profileCount,
     })
   } catch (err) {
     console.error('[deactivate-license]', err)

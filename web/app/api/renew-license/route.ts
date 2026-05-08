@@ -8,10 +8,15 @@ interface RenewRequest {
 }
 
 export async function POST(req: NextRequest) {
-  const client = serverClient()
+  const token = req.cookies.get('sb-access-token')?.value
+  if (!token) {
+    return NextResponse.json({ ok: false, message: 'Unauthorized' }, { status: 401 })
+  }
+
+  const client = serverClient(token)
 
   try {
-    const { data: { user }, error: authError } = await client.auth.getUser()
+    const { data: { user }, error: authError } = await client.auth.getUser(token)
     if (authError || !user) {
       return NextResponse.json({ ok: false, message: 'Unauthorized' }, { status: 401 })
     }
@@ -32,6 +37,14 @@ export async function POST(req: NextRequest) {
 
     if (licenseError || !license || license.user_id !== user.id) {
       return NextResponse.json({ ok: false, message: 'License not found' }, { status: 404 })
+    }
+
+    const expired = new Date(license.expires_at).getTime() <= Date.now()
+    if (!expired) {
+      return NextResponse.json(
+        { ok: false, message: 'Chỉ được gia hạn khi key đã hết hạn.' },
+        { status: 400 }
+      )
     }
 
     // Verify tier exists and get price
@@ -69,7 +82,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      message: 'Renewal initiated, awaiting payment',
+      message: 'Đã tạo giao dịch gia hạn, vui lòng thanh toán để kích hoạt thêm thời hạn.',
       key: license.key,
       licenseId: license.id, // Return for checkout page
       oldExpires: license.expires_at,
