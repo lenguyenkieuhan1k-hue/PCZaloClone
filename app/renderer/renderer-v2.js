@@ -3,6 +3,11 @@ let profiles = []
 let proxyTarget = null
 let backupSelected = new Set()
 let currentProfileInfoJson = ''
+let refreshTimer = null
+let refreshInFlight = false
+let refreshPending = false
+let modalFocusTimer = null
+let lastModalFocusId = 'inputDisplayName'
 
 function esc(value) {
   return String(value || '')
@@ -13,6 +18,8 @@ function esc(value) {
 }
 
 function setStatus(text) {
+  // Avoid repaint churn while user is interacting with modals (typing jitter).
+  if (isModalOpen()) return
   $('statusBar').textContent = text || 'Sẵn sàng'
 }
 
@@ -154,15 +161,81 @@ function switchTab(tab) {
 }
 
 async function refresh() {
-  setStatus('Đang tải danh sách...')
-  const rs = await window.api.listProfiles()
-  if (!rs || !rs.ok) {
-    setStatus('Không tải được danh sách profile')
+  if (refreshInFlight) {
+    refreshPending = true
     return
   }
-  profiles = rs.profiles || []
-  renderProfiles()
-  setStatus(`Đã tải ${profiles.length} profile`)
+  refreshInFlight = true
+  setStatus('Đang tải danh sách...')
+  try {
+    const rs = await window.api.listProfiles()
+    if (!rs || !rs.ok) {
+      setStatus('Không tải được danh sách profile')
+      return
+    }
+    profiles = rs.profiles || []
+
+    // Avoid stealing typing focus/caret while user is interacting in modal
+    // (Add profile / Proxy / etc). Defer DOM render until modal is closed.
+    if (isModalOpen()) {
+      refreshPending = true
+      return
+    }
+
+    renderProfiles()
+    setStatus(`Đã tải ${profiles.length} profile`)
+  } finally {
+    refreshInFlight = false
+    if (refreshPending && !isModalOpen()) {
+      refreshPending = false
+      void refresh()
+    }
+  }
+}
+
+function isModalOpen() {
+  const modalIds = ['modalOverlay', 'proxyOverlay', 'backupOverlay', 'profileInfoOverlay', 'privacyOverlay', 'updateOverlay', 'licenseKickedOverlay']
+  return modalIds.some((id) => {
+    const el = $(id)
+    return !!el && !el.classList.contains('hidden')
+  })
+}
+
+function stopModalFocusGuard() {
+  if (modalFocusTimer) {
+    clearInterval(modalFocusTimer)
+    modalFocusTimer = null
+  }
+}
+
+function startModalFocusGuard() {
+  stopModalFocusGuard()
+  modalFocusTimer = setInterval(() => {
+    const overlay = $('modalOverlay')
+    if (!overlay || overlay.classList.contains('hidden')) {
+      stopModalFocusGuard()
+      return
+    }
+    const active = document.activeElement
+    if (active && overlay.contains(active)) return
+    const preferred = $(lastModalFocusId) || $('inputDisplayName')
+    if (preferred && typeof preferred.focus === 'function') {
+      preferred.focus()
+    }
+  }, 220)
+}
+
+function scheduleRefresh(options = {}) {
+  const allowDuringModal = !!options.allowDuringModal
+  if (!allowDuringModal && isModalOpen()) {
+    refreshPending = true
+    return
+  }
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null
+    void refresh()
+  }, 260)
 }
 
 function renderProfiles() {
@@ -266,13 +339,19 @@ function openAddModal() {
   $('addProxyAuthEnabled').checked = false
   $('addProxyUsername').value = ''
   $('addProxyPassword').value = ''
+  $('addProxyCheckResult').textContent = ''
   syncAddProxyUi()
   $('modalOverlay').classList.remove('hidden')
-  $('inputDisplayName').focus()
+  const input = $('inputDisplayName')
+  input.focus()
+  requestAnimationFrame(() => input.focus())
+  startModalFocusGuard()
 }
 
 function closeAddModal() {
   $('modalOverlay').classList.add('hidden')
+  stopModalFocusGuard()
+  if (refreshPending) scheduleRefresh({ allowDuringModal: true })
 }
 
 function syncAddProxyUi() {
@@ -324,6 +403,22 @@ async function handleAdd() {
   await refresh()
 }
 
+async function handleAddProxyCheck() {
+  const proxy = collectAddProxy()
+  if (!proxy.enabled) {
+    $('addProxyCheckResult').textContent = 'Proxy đang tắt.'
+    return
+  }
+  if (!proxy.host || !proxy.port) {
+    $('addProxyCheckResult').textContent = 'Thiếu host hoặc port.'
+    return
+  }
+  $('addProxyCheckResult').textContent = 'Đang kiểm tra...'
+  const rs = await window.api.checkProxy(proxy)
+  if (rs?.ok) $('addProxyCheckResult').textContent = `✅ Live - IP: ${rs.ip || 'ok'}`
+  else $('addProxyCheckResult').textContent = `❌ ${rs?.message || 'Proxy không hoạt động'}`
+}
+
 async function handleImport() {
   setStatus('Đang nhập JSON...')
   const rs = await window.api.importProfile()
@@ -367,6 +462,7 @@ function openBackupModal() {
 
 function closeBackupModal() {
   $('backupOverlay').classList.add('hidden')
+  if (refreshPending) scheduleRefresh({ allowDuringModal: true })
 }
 
 async function handleExportSelected() {
@@ -468,6 +564,7 @@ async function openProfileInfoModal(profileName) {
 
 function closeProfileInfoModal() {
   $('profileInfoOverlay').classList.add('hidden')
+  if (refreshPending) scheduleRefresh({ allowDuringModal: true })
 }
 
 async function copyProfileInfoJson() {
@@ -502,6 +599,7 @@ function openProxyModal(profile) {
 function closeProxyModal() {
   proxyTarget = null
   $('proxyOverlay').classList.add('hidden')
+  if (refreshPending) scheduleRefresh({ allowDuringModal: true })
 }
 
 function syncProxyUi() {
@@ -734,6 +832,11 @@ function bind() {
   $('modalClose').addEventListener('click', closeAddModal)
   $('modalCancel').addEventListener('click', closeAddModal)
   $('modalOverlay').addEventListener('click', (e) => { if (e.target === $('modalOverlay')) closeAddModal() })
+  $('modalOverlay').addEventListener('focusin', (e) => {
+    const target = e.target
+    if (!target || !target.id) return
+    lastModalFocusId = target.id
+  })
   $('btnModalAdd').addEventListener('click', handleAdd)
   $('addProxyEnabled').addEventListener('change', syncAddProxyUi)
   $('addProxyAuthEnabled').addEventListener('change', syncAddProxyUi)
@@ -750,6 +853,7 @@ function bind() {
     syncAddProxyUi()
   })
   $('addProxyQuickPaste').addEventListener('click', () => { quickPasteAddProxy().catch(() => {}) })
+  $('addProxyCheck').addEventListener('click', () => { handleAddProxyCheck().catch(() => {}) })
 
   $('btnImport').addEventListener('click', handleImport)
   $('btnExport').addEventListener('click', openBackupModal)
@@ -825,11 +929,11 @@ function bind() {
   $('profileInfoOverlay').addEventListener('click', (e) => { if (e.target === $('profileInfoOverlay')) closeProfileInfoModal() })
 
   if (typeof window.api.onProfileUpdated === 'function') {
-    window.api.onProfileUpdated(() => { refresh().catch(() => {}) })
+    window.api.onProfileUpdated(() => { scheduleRefresh() })
   }
 
   if (typeof window.api.onProfilesReloaded === 'function') {
-    window.api.onProfilesReloaded(() => { refresh().catch(() => {}) })
+    window.api.onProfilesReloaded(() => { scheduleRefresh({ allowDuringModal: true }) })
   }
 
   if (typeof window.api.onLicenseUpdated === 'function') {
@@ -1028,4 +1132,9 @@ function bindPrivacyModal() {
     })
 }
 
-bindPrivacyModal()
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bindPrivacyModal)
+} else {
+  // Defer one tick so any late-injected modal HTML lands in DOM first.
+  setTimeout(bindPrivacyModal, 0)
+}

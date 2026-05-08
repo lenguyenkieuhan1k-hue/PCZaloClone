@@ -64,6 +64,7 @@ function shouldBlockPrivacyUrl(url, privacy) {
 }
 const cookieSaveTimers = new Map()
 const localStorageSeedCache = new Map()
+const proxyCheckCache = new Map()
 let licenseHeartbeatTimer = null
 
 // Multi-key license cache: { license_id → { key, tier_id, account_quota, expires_at, status, active_session_id } }
@@ -687,12 +688,18 @@ function checkProxyViaCurl(proxy) {
   const p = normalizeProxy(proxy)
   if (!p.enabled) return { ok: false, message: 'Proxy chưa đủ thông tin host/port' }
 
+  const cacheKey = [p.protocol, p.host, p.port, p.authEnabled ? p.username : '', p.authEnabled ? p.password : ''].join('|')
+  const cached = proxyCheckCache.get(cacheKey)
+  if (cached && cached.ok && (Date.now() - cached.at) < 120000) {
+    return { ok: true, ip: cached.ip, cached: true }
+  }
+
   const scheme = p.protocol === 'SOCKS5' ? 'socks5h' : (p.protocol === 'HTTPS' ? 'https' : 'http')
   const proxyUrl = `${scheme}://${p.host}:${p.port}`
   const args = [
     '-sS',
-    '--max-time', '12',
-    '--connect-timeout', '8',
+    '--max-time', '8',
+    '--connect-timeout', '5',
     '--proxy', proxyUrl,
     'https://api.ipify.org?format=json',
   ]
@@ -702,7 +709,7 @@ function checkProxyViaCurl(proxy) {
   }
 
   try {
-    const rs = spawnSync('curl.exe', args, { encoding: 'utf8', windowsHide: true, timeout: 15000 })
+    const rs = spawnSync('curl.exe', args, { encoding: 'utf8', windowsHide: true, timeout: 10000 })
     const status = typeof rs.status === 'number' ? rs.status : 1
     const stdout = String(rs.stdout || '').trim()
     const stderr = String(rs.stderr || '').trim()
@@ -710,7 +717,10 @@ function checkProxyViaCurl(proxy) {
     if (status === 0) {
       try {
         const json = JSON.parse(stdout || '{}')
-        if (json.ip) return { ok: true, ip: json.ip }
+        if (json.ip) {
+          proxyCheckCache.set(cacheKey, { ok: true, ip: json.ip, at: Date.now() })
+          return { ok: true, ip: json.ip }
+        }
       } catch (_) {}
       return { ok: false, message: 'Proxy phản hồi nhưng dữ liệu không hợp lệ' }
     }

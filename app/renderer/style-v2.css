@@ -4,11 +4,17 @@ body {
   font-family: 'Segoe UI', Arial, sans-serif;
   background: #ffffff;
   color: #222;
-  user-select: none;
+  user-select: auto;
   overflow: hidden;
   height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+input,
+textarea,
+select {
+  user-select: text;
 }
 
 .titlebar {
@@ -313,7 +319,7 @@ body {
   z-index: 20;
 }
 
-.hidden { display: none; }
+.hidden { display: none !important; }
 
 .modal {
   width: 410px;
@@ -321,6 +327,11 @@ body {
   border-radius: 12px;
   box-shadow: 0 10px 42px rgba(0, 0, 0, 0.2);
   overflow: hidden;
+}
+
+.modal,
+.modal * {
+  -webkit-app-region: no-drag;
 }
 
 .modal-header {
@@ -450,7 +461,7 @@ body {
 
 .proxy-inline-tools {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr auto auto;
   gap: 8px;
   align-items: center;
 }
