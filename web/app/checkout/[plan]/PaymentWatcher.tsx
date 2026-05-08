@@ -22,6 +22,7 @@ export default function PaymentWatcher({ memo }: { memo: string }) {
   const [remainingMs, setRemainingMs] = useState(MAX_WAIT_MS)
   const startedAtRef = useRef<number>(Date.now())
   const query = useMemo(() => encodeURIComponent(memo), [memo])
+  const startedAtQuery = useMemo(() => String(startedAtRef.current), [])
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -38,7 +39,7 @@ export default function PaymentWatcher({ memo }: { memo: string }) {
     async function pollOnce() {
       try {
         console.error(`[PAYMENT-WATCHER] Poll #${Math.floor((Date.now() - startedAtRef.current) / POLL_INTERVAL_MS)} at ${new Date().toISOString()}, memo="${memo}"`)
-        const rs = await fetch(`/api/payment-status?memo=${query}`, { cache: 'no-store' })
+        const rs = await fetch(`/api/payment-status?memo=${query}&startedAt=${startedAtQuery}`, { cache: 'no-store' })
         if (!rs.ok) {
           console.error(`[PAYMENT-WATCHER] HTTP ${rs.status}`)
           if (disposed) return
@@ -96,7 +97,7 @@ export default function PaymentWatcher({ memo }: { memo: string }) {
       disposed = true
       if (timer) clearTimeout(timer)
     }
-  }, [query, router])
+  }, [query, router, startedAtQuery])
 
   if (status === 'paid') {
     return (
