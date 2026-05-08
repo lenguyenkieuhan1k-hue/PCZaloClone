@@ -101,14 +101,19 @@ npm run dev
 
 ### 7. Deploy
 
+**Chính (production zalomask.com):** trong Vercel Dashboard connect GitHub repo → **Root Directory = `web/`** → mỗi lần push `main` là build production (domain đã gắn sẵn giữ nguyên).
+
+**CLI (`npx vercel --prod`):**
+
 ```bash
-# Vercel CLI:
 cd web
-npx vercel link
+npx vercel link    # chọn đúng Team + Project đã có domain zalomask.com (đừng để CLI tạo project “web” mặc định nhầm)
 npx vercel --prod
 ```
 
-Hoặc connect GitHub repo trong Vercel UI, set Root Directory = `web/`, Vercel sẽ tự build mỗi khi push `main`.
+Nếu lần đầu chạy `--prod` **không** link trước, CLI có thể **tạo project Vercel mới** + URL kiểu `*.vercel.app` — code đã deploy nhưng **chưa** thay thế site trên `zalomask.com`. Project mới cần **copy đủ Environment Variables** giống project production (Supabase, license keys, v.v.).
+
+Luồng đồng bộ cloud lớn cần route `upload-init` / `upload-commit` và migration bucket Storage (`supabase/migrations/0006_cloud_storage_bucket.sql` hoặc tương đương).
 
 ### 8. DNS
 
