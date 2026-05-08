@@ -17,7 +17,8 @@ export default function CallbackPage() {
       document.cookie = `sb-access-token=${session.access_token}; path=/; max-age=${maxAge}; samesite=lax`
       document.cookie = `sb-refresh-token=${session.refresh_token}; path=/; max-age=${60 * 60 * 24 * 30}; samesite=lax`
       setStatus('Đăng nhập thành công, đang chuyển hướng...')
-      router.replace('/dashboard')
+      // Use full navigation so root layout re-renders with fresh auth cookies.
+      window.location.replace('/dashboard')
     }
 
     const code = params.get('code')
