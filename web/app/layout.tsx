@@ -6,7 +6,14 @@ import { getSessionUser } from '@/lib/auth-helpers'
 export const metadata: Metadata = {
   title: 'ZaloMask — Đa tài khoản Zalo PC',
   description: 'Quản lý nhiều tài khoản Zalo.',
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'https://zalomask.com')
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'https://zalomask.com'),
+  icons: {
+    icon: [
+      { url: '/favicon.png', type: 'image/png' },
+    ],
+    shortcut: ['/favicon.png'],
+    apple: ['/favicon.png'],
+  },
 }
 
 // Header auth state depends on request cookies. Force per-request render
