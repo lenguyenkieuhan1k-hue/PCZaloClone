@@ -18,7 +18,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Da
   let licenses: any[] = []
   const { data: rawLicenses, error: licenseErr } = await supabase
     .from('licenses')
-    .select('id, license_id, key, tier_id, account_quota, duration, expires_at, status, active_machine_id, created_at')
+    .select('id, key, tier_id, account_quota, duration, expires_at, status, created_at')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
 
@@ -41,7 +41,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Da
   }
 
   const paidLicenseId = String(searchParams?.paid || '').trim()
-  const paidLicenseExists = !!paidLicenseId && licenses.some((l) => l.id === paidLicenseId || l.license_id === paidLicenseId)
+  const paidLicenseExists = !!paidLicenseId && licenses.some((l) => l.id === paidLicenseId)
 
   const { data: sessions } = await supabase
     .from('sessions')

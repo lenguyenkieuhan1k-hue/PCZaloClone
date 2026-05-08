@@ -6,7 +6,7 @@ import { formatVnd, DURATION_LABEL, DURATION_DAYS, type Duration } from '@/lib/p
 
 interface License {
   id: string
-  license_id: string
+  license_id?: string
   key: string
   tier_id: string
   account_quota: number
