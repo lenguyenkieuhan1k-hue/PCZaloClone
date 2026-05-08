@@ -92,10 +92,11 @@ export default async function CheckoutPage({ params, searchParams }: PageProps) 
         </div>
       </div>
 
+      <PaymentWatcher memo={memo} />
+
       <div className="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-xl text-sm">
         Sau khi chuyển khoản, key sẽ được gửi qua email kèm hướng dẫn nhập vào app.
         Nếu sau 5 phút chưa nhận được, inbox <a href="https://zalo.me/0981897779" className="text-brand underline">Zalo 0981897779</a> để được xử lý thủ công.
-        <PaymentWatcher memo={memo} />
       </div>
     </div>
   )

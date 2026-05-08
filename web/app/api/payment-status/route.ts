@@ -63,11 +63,15 @@ export async function GET(req: NextRequest) {
   const targetKey = canonicalKey(memo)
   const targetParsed = parseMemo(memo)
   const target = normalizeMemoText(memo)
-  const currentCheckoutWindowStart = validStartedAt ? (validStartedAt - 2 * 60 * 1000) : null
+  // Only match payments whose row was CREATED after this checkout session started.
+  // We use created_at (webhook insert time) with a small forward grace of 30s
+  // for clock skew — but NO backward grace, so a payment from a previous session
+  // (same tier/duration) never auto-matches a fresh checkout.
+  const currentCheckoutWindowStart = validStartedAt ? (validStartedAt - 30 * 1000) : null
 
   const candidateRows = (rows || []).filter((row) => {
     if (!currentCheckoutWindowStart) return true
-    const ts = Date.parse(String(row.paid_at || row.created_at || ''))
+    const ts = Date.parse(String(row.created_at || ''))
     if (!Number.isFinite(ts)) return false
     return ts >= currentCheckoutWindowStart
   })

@@ -101,9 +101,14 @@ export default function PaymentWatcher({ memo }: { memo: string }) {
 
   if (status === 'paid') {
     return (
-      <p className="mt-4 text-sm text-green-700 font-medium">
-        ✅ Đã xác nhận thanh toán — đang chuyển sang trang Tài khoản...
-      </p>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+        <div className="bg-white rounded-2xl shadow-2xl p-10 flex flex-col items-center gap-4 max-w-sm w-full mx-4">
+          <div className="text-5xl">✅</div>
+          <h2 className="text-xl font-bold text-green-700">Thanh toán thành công!</h2>
+          <p className="text-gray-600 text-center text-sm">Đang chuyển sang trang Tài khoản để lấy key của bạn...</p>
+          <div className="w-8 h-8 border-4 border-green-500 border-t-transparent rounded-full animate-spin"></div>
+        </div>
+      </div>
     )
   }
   if (status === 'failed') {
