@@ -50,7 +50,10 @@ export async function POST(req: NextRequest) {
     // Verify tier exists and get price
     const tier = PLAN_TIERS.find((t) => t.id === license.tier_id)
     if (!tier) {
-      return NextResponse.json({ ok: false, message: 'Invalid tier' }, { status: 400 })
+      return NextResponse.json(
+        { ok: false, message: 'Gói hiện tại đã ngừng bán. Vui lòng dùng chức năng Nâng cấp tier.' },
+        { status: 400 }
+      )
     }
 
     const price = tier.prices[duration]

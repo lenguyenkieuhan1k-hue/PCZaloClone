@@ -21,12 +21,6 @@ export const PLAN_TIERS: PlanTier[] = [
     prices: { '1m': 0, '3m': 0, '6m': 0, '1y': 0 }
   },
   {
-    id: 'tier-test-1k',
-    accountQuota: 2,
-    label: 'Gói Test 3.000đ (2 Zalo)',
-    prices: { '1m': 3_000, '3m': 3_000, '6m': 3_000, '1y': 3_000 }
-  },
-  {
     id: 'tier-6',
     accountQuota: 6,
     label: 'Gói 6 Zalo',

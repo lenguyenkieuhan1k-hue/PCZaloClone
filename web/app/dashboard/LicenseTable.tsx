@@ -46,7 +46,10 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
   const getLicenseById = (id: string | null) => licenses.find((l) => l.id === id)
 
   const getUpgradeRuleError = (license: License, tierId: string, duration: Duration): string | null => {
-    const currentTier = PLAN_TIERS.find((t) => t.id === license.tier_id)
+    const currentTier = PLAN_TIERS.find((t) => t.id === license.tier_id) || {
+      id: license.tier_id,
+      accountQuota: license.account_quota,
+    }
     const targetTier = PLAN_TIERS.find((t) => t.id === tierId)
     if (!currentTier || !targetTier) return 'Tier không hợp lệ.'
 
@@ -337,6 +340,11 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
               {renewTarget && !isExpired(renewTarget) && (
                 <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">Key này chưa hết hạn, chưa thể gia hạn.</div>
               )}
+              {renewTarget && renewTarget.tier_id === 'tier-test-1k' && (
+                <div className="p-3 rounded-lg bg-amber-50 text-amber-800 text-sm">
+                  Gói test đã ngừng bán. Vui lòng dùng Nâng cấp tier để chuyển sang gói chính thức.
+                </div>
+              )}
               {error && <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{error}</div>}
 
               <div className="flex gap-3">
@@ -350,7 +358,7 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
                 <button
                   onClick={() => handleRenew(showRenewModal)}
                   className="flex-1 px-4 py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 font-medium"
-                  disabled={loading || !renewTarget || !isExpired(renewTarget)}
+                  disabled={loading || !renewTarget || !isExpired(renewTarget) || renewTarget.tier_id === 'tier-test-1k'}
                 >
                   {loading ? 'Đang xử lý...' : 'Tiếp tục'}
                 </button>
@@ -441,9 +449,7 @@ export default function LicenseTable({ licenses, onLicensesUpdate }: LicenseTabl
                   {PLAN_TIERS
                     .filter((tier) => {
                       if (!upgradeTarget) return false
-                      const currentTier = PLAN_TIERS.find((t) => t.id === upgradeTarget.tier_id)
-                      if (!currentTier) return false
-                      return tier.accountQuota >= currentTier.accountQuota
+                      return tier.accountQuota >= upgradeTarget.account_quota
                     })
                     .map((tier) => (
                       <option key={tier.id} value={tier.id}>

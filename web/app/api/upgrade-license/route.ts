@@ -54,9 +54,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, message: 'Invalid new tier' }, { status: 400 })
     }
 
-    const oldTier = PLAN_TIERS.find((t) => t.id === oldLicense.tier_id)
-    if (!oldTier) {
-      return NextResponse.json({ ok: false, message: 'Old tier is invalid' }, { status: 400 })
+    const oldTier = PLAN_TIERS.find((t) => t.id === oldLicense.tier_id) || {
+      id: oldLicense.tier_id,
+      accountQuota: Number(oldLicense.account_quota || 0),
     }
 
     const tierUp = newTier.accountQuota > oldTier.accountQuota
