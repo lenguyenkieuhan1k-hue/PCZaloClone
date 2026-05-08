@@ -31,6 +31,7 @@ create index if not exists profiles_license_id_idx on public.profiles (license_i
 
 alter table public.profiles enable row level security;
 
+drop policy if exists "profiles self read" on public.profiles;
 create policy "profiles self read" on public.profiles
   for select using (auth.uid() = user_id);
 
@@ -62,6 +63,7 @@ create index if not exists license_upgrades_new_license_idx on public.license_up
 
 alter table public.license_upgrades enable row level security;
 
+drop policy if exists "license_upgrades self read" on public.license_upgrades;
 create policy "license_upgrades self read" on public.license_upgrades
   for select using (auth.uid() = user_id);
 

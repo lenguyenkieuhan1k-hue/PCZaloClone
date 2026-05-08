@@ -18,8 +18,10 @@ create table if not exists public.users (
   created_at    timestamptz not null default now()
 );
 alter table public.users enable row level security;
+drop policy if exists "users self read" on public.users;
 create policy "users self read" on public.users
   for select using (auth.uid() = id);
+drop policy if exists "users self update" on public.users;
 create policy "users self update" on public.users
   for update using (auth.uid() = id);
 
@@ -55,6 +57,7 @@ create table if not exists public.licenses (
 create index if not exists licenses_user_id_idx on public.licenses (user_id);
 create index if not exists licenses_status_idx on public.licenses (status);
 alter table public.licenses enable row level security;
+drop policy if exists "licenses self read" on public.licenses;
 create policy "licenses self read" on public.licenses
   for select using (auth.uid() = user_id);
 -- Insert/update only via service-role (server-side API routes). No client RLS.
@@ -74,6 +77,7 @@ create table if not exists public.sessions (
 );
 create index if not exists sessions_license_idx on public.sessions (license_id);
 alter table public.sessions enable row level security;
+drop policy if exists "sessions self read" on public.sessions;
 create policy "sessions self read" on public.sessions
   for select using (
     exists (select 1 from public.licenses l where l.id = sessions.license_id and l.user_id = auth.uid())
@@ -97,6 +101,7 @@ create table if not exists public.payments (
 create index if not exists payments_user_idx on public.payments (user_id);
 create index if not exists payments_status_idx on public.payments (status);
 alter table public.payments enable row level security;
+drop policy if exists "payments self read" on public.payments;
 create policy "payments self read" on public.payments
   for select using (auth.uid() = user_id);
 
