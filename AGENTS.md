@@ -1,5 +1,29 @@
 # ZaloMask — AI Agent Reference (v2, 2026-05-07)
 
+## 0. Current Runtime Note (2026-05-08)
+
+- Nhánh code hiện tại đã chuyển sang PC-only cho profile launch:
+  `add-profile` và `open-profile` mặc định/ép dùng `launchMode: 'pc'`.
+- Zalo Web (`web2`) vẫn còn một số hàm legacy để tương thích dữ liệu cũ,
+  nhưng luồng tạo/mở profile chính là Zalo PC bundled runtime.
+- Preflight patch bundle (`ensurePcRuntimePatchReady` → `ensureAsarPatched`) chạy
+  trước **mọi** lần launch Zalo PC: `open-profile`, `add-profile`, `launch-all`,
+  import (archive + JSON legacy), shortcut `--zalomask-open-profile`, và boot timer.
+  `asar-patch-boot` ghi log và cập nhật `asarPatchState` giống các luồng khác.
+- **Pre-patch trước khi `npm run dist`:** `predist` chạy `scripts/patch-zalo-runtime-for-pack.js`
+  trên `app/zalo-runtime` (sau `setup-zalo-runtime.ps1`). Installer bung ra Program Files đã có
+  `app.asar` + stamp đọc được → `pickRuntimeDirAsync` **không** buộc copy sang Local nếu bundle chỉ đọc.
+- Runtime copy đích nằm trong **`%LocalAppData%\ZaloMask\runtime\zalo-runtime`** (không dùng Roaming)
+  để tránh đồng bộ cloud. Trước copy **xoá hết** thư mục đích nếu tree lệch / copy dở
+  (tránh `EEXIST` trên `app.asar`); copy dùng `fs.promises.cp`, nếu lỗi thì fallback **robocopy**
+  trên Windows; giảm khóa UI. **Không** fallback về bundle Program Files khi copy thất bại — trả lỗi
+  hướng dẫn xóa `...\Local\ZaloMask\runtime\zalo-runtime` thay vì báo `asar-not-writable` nhầm chỗ.
+- `getRuntimeStatus()` là **async** (IPC handlers phải `await`).
+- Proxy auth cho Zalo PC hiện đi qua local HTTP bridge theo từng profile:
+  app tạo proxy `127.0.0.1:<port>` cục bộ, tự inject `Proxy-Authorization`
+  lên upstream HTTP proxy rồi truyền local endpoint đó vào `--proxy-server`.
+  SOCKS5 auth vẫn chưa được hỗ trợ.
+
 Đọc file này TRƯỚC khi sửa code. Nếu thấy bất cứ chỗ nào file này lệch với
 code thực tế, cập nhật lại đây ngay khi PR.
 
@@ -105,13 +129,16 @@ PCZaloClone/
 | `deleteProfile(name)` | `delete-profile` | Xoá profile + partition data |
 | `updateProxy(name, proxy)` | `update-proxy` | Cập nhật proxy meta |
 | `checkProxy(proxy)` | `check-proxy` | Test proxy bằng curl |
-| `exportProfile(name)` | `export-profile` | Xuất 1 JSON với checksum |
-| `exportProfiles(names)` | `export-profiles` | Bundle nhiều profile |
-| `importProfile()` | `import-profile` | Nhập file JSON, tạo profile mới |
+| `exportProfile(name)` | `export-profile` | Xuất 1 desktop package `.zlp` cho profile |
+| `exportProfiles(names)` | `export-profiles` | Sao lưu nhiều profile desktop ra `.zlp` |
+| `importProfile()` | `import-profile` | Nhập package `.zlp/.zip`, fallback JSON legacy |
+| `createProfileShortcut(name)` | `create-profile-shortcut` | Tạo shortcut Desktop mở trực tiếp profile |
 | `openProfilesFolder()` | `open-profiles-folder` | Mở thư mục `profiles/` |
 | `getSettings()` | `get-settings` | Đọc privacy + global flags |
 | `setSetting(key, value)` | `set-setting` | Ghi settings |
 | `getSystemHealth()` | `get-system-health` | Snapshot tình trạng app |
+| `exportDiagnostics()` | `export-diagnostics` | Lưu ZIP chẩn đoán (manifest + runtime + log đã redact) |
+| `logToMain(level, message, detail?)` | `client-log` | Renderer gửi lỗi JS / reject vào `app-runtime.log` |
 | `getLicenseStatus()` | `get-license-status` | Đọc license-state.json |
 | `activateLicense(key)` | `activate-license` | Gọi `/api/activate` |
 | `deactivateLicense()` | `deactivate-license` | Xoá license-state.json |
@@ -227,8 +254,9 @@ State lưu ở `<repo-root>/license-state.json`:
 Heartbeat (`runHeartbeatOnce`):
 - Server trả `status: 'ok'` → cập nhật `lastHeartbeatAt`.
 - Server trả `status: 'kicked'` → **auto cloud upload** (runCloudUpload) →
-  **wipe tất cả profiles local** (wipeAllLocalProfiles) → broadcast
-  `license-kicked` event → delay 600ms → đóng tất cả webWindows.
+  **terminate các tiến trình Zalo PC theo `pid.txt`** → **wipe tất cả
+  profiles local** (wipeAllLocalProfiles) → broadcast `license-kicked`
+  event.
 - Server trả `status: 'expired'` → chỉ broadcast `license-kicked`, không wipe.
 
 ## 8. Cloud Sync
@@ -341,6 +369,10 @@ Luồng chính sản phẩm chỉ gồm Electron app + web license/payment.
 
 ## 12. Gotchas
 
+- **`chromium-win-bootstrap.js` + `spellcheck: false` (main window)** — tránh
+  lỗi cache GPU/disk trên Windows và đơ UI khi gõ trong modal. Gọi ngay sau
+  `require('electron')`. **`npm run predist`** chạy `assert-chromium-bootstrap.js`;
+  không xóa hook đó khi đổi script build.
 - **`main.v2.js` đọc `package.json.main`** — nếu file truncated, Electron
   sẽ load nhầm hoặc crash. Đã có sample bị truncated 2 lần do tool sync,
   cẩn thận khi sửa qua tool Write/Edit.
@@ -352,12 +384,17 @@ Luồng chính sản phẩm chỉ gồm Electron app + web license/payment.
 - **Cookies-Network/Cookies SQLite** không còn dùng — Chromium tự lưu trong
   partition data. Backup chỉ qua IPC export (cookies + localStorage thuần).
 - **Heartbeat poll mỗi 30s** — nếu mất mạng, không có grace period offline
-  (todo). Kicked dialog có 600ms delay trước khi đóng webWindows.
+  (todo). Khi bị kicked, app auto-upload cloud rồi terminate tiến trình Zalo
+  PC theo `pid.txt` trước khi wipe local profiles.
 - **`license-state.json` ở root**, không trong `app/`. Đã thêm vào
   `.gitignore`.
 - **`app-runtime.log` append-only** — chưa rotate. Ở dev có thể to nhanh.
-- **Cloud sync chỉ backup meta.json** — cookies session data (Chromium
-  partition) không được backup. Sau cloud-download, user sẽ phải login lại.
+- **Chẩn đoán máy khách:** Cài đặt → «Xuất chẩn đoán» (ZIP), hoặc CLI  
+  `ZaloMask.exe --zalomask-diagnostics=C:\path\diag.zip` (thoát ngay sau khi ghi file).  
+  Script: `scripts/collect-zalomask-diagnostics.ps1` (khi app không chạy).
+- **Cloud sync backup dạng desktop package base64** trong `cloud_backups.profiles_json`
+  (kind=`desktop-package`), có checksum SHA-256; vẫn fallback đọc dữ liệu
+  legacy nếu backup cũ.
 - **Cloud sync chỉ hoạt động khi có license active** — free tier không có
   cloud sync.
 
@@ -472,13 +509,16 @@ PCZaloClone/
 | `deleteProfile(name)` | `delete-profile` | Xoá profile + partition data |
 | `updateProxy(name, proxy)` | `update-proxy` | Cập nhật proxy meta |
 | `checkProxy(proxy)` | `check-proxy` | Test proxy bằng curl |
-| `exportProfile(name)` | `export-profile` | Xuất 1 JSON với checksum |
-| `exportProfiles(names)` | `export-profiles` | Bundle nhiều profile |
-| `importProfile()` | `import-profile` | Nhập file JSON, tạo profile mới |
+| `exportProfile(name)` | `export-profile` | Xuất 1 desktop package `.zlp` cho profile |
+| `exportProfiles(names)` | `export-profiles` | Sao lưu nhiều profile desktop ra `.zlp` |
+| `importProfile()` | `import-profile` | Nhập package `.zlp/.zip`, fallback JSON legacy |
+| `createProfileShortcut(name)` | `create-profile-shortcut` | Tạo shortcut Desktop mở trực tiếp profile |
 | `openProfilesFolder()` | `open-profiles-folder` | Mở thư mục `profiles/` |
 | `getSettings()` | `get-settings` | Đọc privacy + global flags |
 | `setSetting(key, value)` | `set-setting` | Ghi settings |
 | `getSystemHealth()` | `get-system-health` | Snapshot tình trạng app |
+| `exportDiagnostics()` | `export-diagnostics` | Lưu ZIP chẩn đoán (manifest + runtime + log đã redact) |
+| `logToMain(level, message, detail?)` | `client-log` | Renderer gửi lỗi JS / reject vào `app-runtime.log` |
 | `getLicenseStatus()` | `get-license-status` | Đọc license-state.json |
 | `activateLicense(key)` | `activate-license` | Gọi `/api/activate` |
 | `deactivateLicense()` | `deactivate-license` | Xoá license-state.json |
@@ -589,8 +629,9 @@ State lưu ở `<repo-root>/license-state.json`:
 
 Heartbeat (`runHeartbeatOnce`):
 - Server trả `status: 'ok'` → cập nhật `lastHeartbeatAt`.
-- Server trả `status: 'kicked'|'expired'` → broadcast `license-kicked` event,
-  delay 600ms cho UI render dialog, rồi đóng tất cả webWindows.
+- Server trả `status: 'kicked'` → auto-upload cloud, terminate tiến trình
+  Zalo PC theo `pid.txt`, wipe local profiles, rồi broadcast `license-kicked`.
+- Server trả `status: 'expired'` → chỉ broadcast `license-kicked`, không wipe.
 
 ## 8. Auto-update
 
@@ -642,6 +683,10 @@ Luồng chính sản phẩm chỉ gồm Electron app + web license/payment.
 
 ## 11. Gotchas
 
+- **`chromium-win-bootstrap.js` + `spellcheck: false` (main window)** — tránh
+  lỗi cache GPU/disk trên Windows và đơ UI khi gõ trong modal. Gọi ngay sau
+  `require('electron')`. **`npm run predist`** chạy `assert-chromium-bootstrap.js`;
+  không xóa hook đó khi đổi script build.
 - **`main.v2.js` đọc `package.json.main`** — nếu file truncated, Electron
   sẽ load nhầm hoặc crash. Đã có sample bị truncated 2 lần do tool sync,
   cẩn thận khi sửa qua tool Write/Edit.
@@ -657,6 +702,9 @@ Luồng chính sản phẩm chỉ gồm Electron app + web license/payment.
 - **`license-state.json` ở root**, không trong `app/`. Đã thêm vào
   `.gitignore`.
 - **`app-runtime.log` append-only** — chưa rotate. Ở dev có thể to nhanh.
+- **Chẩn đoán máy khách:** Cài đặt → «Xuất chẩn đoán» (ZIP), hoặc CLI  
+  `ZaloMask.exe --zalomask-diagnostics=C:\path\diag.zip` (thoát ngay sau khi ghi file).  
+  Script: `scripts/collect-zalomask-diagnostics.ps1` (khi app không chạy).
 
 ## 12. Không nên làm
 

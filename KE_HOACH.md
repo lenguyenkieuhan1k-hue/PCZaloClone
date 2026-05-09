@@ -3,7 +3,78 @@
 > File này lưu toàn bộ ý tưởng + lộ trình phát triển sản phẩm.
 > Mở lại file này khi muốn nhớ "đã quyết những gì, đang ở đâu, làm gì tiếp".
 
+## 0. Cập nhật nhanh (2026-05-08)
+
+## 0i. Nhật ký thay đổi chiều -> tối (2026-05-08)
+
+### Những gì đã thay đổi trong app
+
+1. Đổi hướng backup/restore profile desktop sang định dạng portable `.zmb` (thay cho phụ thuộc `.zlp` strict cũ).
+2. Bổ sung cơ chế phân loại file khi verify manifest.
+3. Nhóm bắt buộc (critical): mismatch thì fail import.
+4. Nhóm biến động runtime (volatile): mismatch chỉ cảnh báo, không fail import.
+5. Cập nhật luồng export/import và cloud package để đọc/ghi theo format portable mới.
+6. Sửa lỗi export bị fail do đường dẫn temp quá dài trên Windows.
+7. Rút ngắn tên thư mục/file tạm khi đóng gói và giải nén.
+8. Thêm fallback `tar.exe` khi `Compress-Archive`/`Expand-Archive` của PowerShell lỗi.
+9. Giữ lại tương thích dữ liệu backup cũ trong import (legacy path) để tránh gãy luồng người dùng cũ.
+
+### Điểm nghẽn hiện tại (chưa đạt mục tiêu)
+
+1. Export hiện đã tạo file được ổn định hơn, nhưng import vẫn có trường hợp fail `Sai dung lượng file` ở một số file DB/media path sâu.
+2. Có trường hợp import xong mở profile vẫn bị yêu cầu đăng nhập Zalo lại.
+3. Đây là blocker chính: backup chưa đảm bảo "portable session" đúng nghĩa khi chuyển máy.
+
+### Mục tiêu bắt buộc cần xử lý (theo yêu cầu hiện tại)
+
+1. Xuất từ máy A, nhập vào máy B phải mở được profile ngay.
+2. Dữ liệu phiên phải giữ nguyên: cookie, local/session storage, DB state liên quan auth.
+3. Không bắt đăng nhập lại Zalo sau khi khôi phục.
+
+### Định nghĩa Done cho bài toán xuất/nhập
+
+1. Test tối thiểu 3 vòng export -> import liên tiếp trên 2 máy khác nhau không phát sinh relogin.
+2. Không còn popup `Sai dung lượng file` cho nhóm volatile/runtime files.
+3. Sau import, profile mở lên vào thẳng trạng thái đã đăng nhập (không QR, không nhập mật khẩu).
+
+### Kế hoạch xử lý tiếp theo (ưu tiên cao nhất)
+
+1. Chốt lại danh sách file session-core bắt buộc preserve và cách restore theo thứ tự an toàn.
+2. Tách verification strict/lenient đúng theo loại file, tránh fail nhầm dữ liệu runtime biến động.
+3. Bổ sung kiểm tra hậu import (restore health report) để biết thiếu mảnh dữ liệu nào khi bị relogin.
+4. Chỉ coi task hoàn tất khi xác nhận cross-machine restore không cần đăng nhập lại.
+
+### Đã hoàn thành trong sprint gần nhất
+
+- Ổn định payment flow SePay -> webhook -> dashboard.
+- Chốt business rules: nâng cấp/gia hạn/hủy đúng điều kiện.
+- Fix proxy quick paste + check proxy trong modal thêm profile.
+- Fix lỗi modal mất focus/đơ input khi nhập thông tin.
+- Chặn tự đóng modal khi click ra ngoài với popup có form nhập.
+- Thu gọn cửa sổ mở profile theo kiểu mobile-like để đỡ chiếm màn hình.
+- Build và đẩy các bản hotfix liên tiếp lên release tags.
+
+### Vấn đề chính hiện tại
+
+- Người dùng cần nghe/gọi ngay trong profile Zalo.
+- Với kiến trúc hiện tại (Electron + chat.zalo.me), tính năng gọi bị Zalo khóa ở bản web.
+- Đây là giới hạn nền tảng, không phải bug có thể sửa bằng toggle/camera permission.
+
+### Quyết định sản phẩm đề xuất
+
+1. Định vị rõ: ZaloMask là công cụ chat đa tài khoản ổn định.
+2. Bổ sung luồng gọi điện: chuyển nhanh sang Zalo PC chính chủ khi người dùng bấm gọi.
+3. Truyền thông minh bạch giới hạn nghe/gọi ở web trên landing + app.
+
+### Backlog ưu tiên kế tiếp
+
+1. Thêm nút hành động "Mở Zalo PC" trên mỗi profile.
+2. Thêm trạng thái hướng dẫn "gọi chỉ hỗ trợ trên Zalo PC" ở UI profile.
+3. Nghiên cứu spike kỹ thuật 1-2 tuần cho phương án bridge desktop-call (nếu muốn theo hướng R&D rủi ro cao).
+
 ## 0. Cập nhật nhanh (2026-05-07)
+
+- Mobile (Android + iOS) sẽ triển khai theo mô hình đồng bộ 3 chiều bắt buộc: Phone <-> Web, PC <-> Web, Phone theo dõi/triggers trạng thái PC qua server (source of truth).
 
 - Runtime đang dùng thực tế: `app/main.v2.js` (web profile v2), không còn chạy mặc định theo luồng clone desktop cũ.
 - Đã ổn định luồng import/export và giữ phiên đăng nhập web (cookies + localStorage).
@@ -1280,3 +1351,45 @@ Việc cụ thể, làm theo thứ tự:
 ### Phase 2 — Hệ thống license với single‑session
 
 **Mục tiêu:** Khách mua key → activate trên 1 máy. Nếu c
+
+## 0g. Chiến lược nghe/gọi (2026-05-08)
+
+> Đầy đủ phân tích + checklist trong `docs/decisions/calling-2026-05-08.md`.
+
+### Vấn đề
+
+Zalo Web bị Zalo gate chức năng nghe/gọi ở **3 lớp server-side** (signaling, native module, device-trust). Không thể bypass hợp lệ.
+
+### Hướng chốt: A + C
+
+**Hướng A — Quick-switch sang Zalo PC (sprint hiện tại, ~5 ngày):**
+
+- Intercept "PC only" toast trong chat.zalo.me.
+- Modal: **Mở Zalo PC** / **Mở trên điện thoại (QR)** / **Hủy**.
+- Deeplink `zalo://chat?uid=<peerId>` cho cả PC + mobile.
+- Settings: thiết bị mặc định nghe gọi.
+- Telemetry event `call-attempt` để đo demand thực tế.
+
+**Hướng C — Mobile companion (R&D 6-10 tuần, sau khi A ship):**
+
+- React Native + Expo app, cùng license với desktop.
+- Push notification "ring my phone" → mở Zalo gốc trên điện thoại để nhận/gọi.
+- Companion **không chạy cuộc gọi** — chỉ relay deeplink + push.
+- Android trước, iOS sau (cần Apple Developer $99/năm).
+
+### Loại bỏ
+
+- **Hướng B (Bridge Zalo PC)**: maintenance cost quá cao, Zalo update vỡ thường xuyên.
+- **Hướng D (VoIP riêng)**: lệch core value — khách muốn nhận cuộc gọi Zalo, không phải số mới.
+- **Hướng E (Zalo OA)**: OA không có call API public, chỉ messaging cho doanh nghiệp.
+
+### Lộ trình
+
+```
+Tuần này:    Ship Hướng A (PC + phone deeplink + settings + telemetry)
+Tuần 2-3:    Đo demand qua telemetry. >30% MAU bấm gọi → ưu tiên cao C.
+Tuần 4-6:    R&D Companion Android (React Native + Expo + FCM).
+Tuần 7-10:   Port iOS (cần Apple Dev account).
+Tuần 11+:    Public launch Play Store + App Store.
+```
+

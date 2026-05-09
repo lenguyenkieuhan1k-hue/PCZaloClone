@@ -25,16 +25,160 @@ const CLONE_ACCOUNT_FILE = 'zalomask-account.json'
 const CLONE_SEED_FILE = 'zalomask-seed.json'
 const COOKIE_SAVE_DEBOUNCE_MS = 800
 const SNAPSHOT_DEBOUNCE_MS = 600
+const PRIVACY_CACHE_TTL_MS = 1000
 const ZALO_COOKIE_HOSTS = ['.zalo.me', '.chat.zalo.me', '.zaloapp.com', '.zclient.zalo']
 const CLONE_SESSION_PRELOAD_FILE = 'clone-session-preload.js'
+const PRIVACY_URL_RULES = [
+  {
+    key: 'hideTyping',
+    match: (url) => /(?:\/api\/.*\/typing|\/typing(?:v\d+)?|\btyping\b|is[_-]?typing|typing[_-]?status|composer(?:\/|$)|presence(?:\/|$)|\/chat\/typing)(?:\?|$|\/|\b)/i.test(url),
+  },
+  {
+    key: 'hideSeen',
+    match: (url) => /(?:\/api\/(?:message|group|conversation)\/(?:seen|seenv\d+|read|mark-read|read-receipt)|\/e2ee\/pc\/t\/(?:message|group)\/seen|(?:\b|[\/_-])(?:seen|read|read[_-]?receipt)(?:v\d+)?(?:\b|[\/_-]))(?:\?|$|\/)?/i.test(url),
+  },
+  {
+    key: 'hideReceived',
+    match: (url) => /(?:\/api\/(?:message|group|conversation)\/(?:delivered|deliveredv\d+|received|recv|ack|receipt)|\/e2ee\/pc\/t\/(?:message|group)\/delivered|(?:\b|[\/_-])(?:delivered|received|recv|ack|receipt)(?:v\d+)?(?:\b|[\/_-]))(?:\?|$|\/)?/i.test(url),
+  },
+]
 
 let cloneDataRoot = ''
 let pendingCloneImei = ''
 let cookieSaveTimer = null
 let snapshotSaveTimer = null
 let lastSnapshotPayload = null
+const privacyGuardInstalledSessions = new WeakSet()
+let privacySettingsCache = {
+  expiresAt: 0,
+  value: {
+    hideTyping: false,
+    hideSeen: false,
+    hideReceived: false,
+  },
+}
+
+function writeCloneShimLoadedMarker() {
+  try {
+    const profileName = String(process.env.ZALOMASK_PROFILE_NAME || '').trim() || 'default'
+    const cloneId = String(process.env.ZALOMASK_CLONE_ID || '').trim() || getCloneId() || ''
+    const programData = process.env.ProgramData || 'C:\\ProgramData'
+    const outDir = path.join(programData, 'ZaloMask', 'privacy')
+    try { fs.mkdirSync(outDir, { recursive: true }) } catch {}
+    fs.writeFileSync(
+      path.join(outDir, profileName + '.clone-shim-loaded.json'),
+      JSON.stringify({
+        loadedAt: new Date().toISOString(),
+        profile: profileName,
+        cloneId,
+        version: 'clone-main-shim',
+      }, null, 2),
+      'utf8'
+    )
+  } catch {}
+}
+
+function getPrivacySettingsPath() {
+  const profileName = String(process.env.ZALOMASK_PROFILE_NAME || '').trim() || 'default'
+  const programData = process.env.ProgramData || 'C:\\ProgramData'
+  return path.join(programData, 'ZaloMask', 'privacy', profileName + '.json')
+}
+
+function readPrivacySettings() {
+  if (Date.now() < privacySettingsCache.expiresAt) return privacySettingsCache.value
+  try {
+    const raw = fs.readFileSync(getPrivacySettingsPath(), 'utf8')
+    const parsed = JSON.parse(raw)
+    privacySettingsCache = {
+      expiresAt: Date.now() + PRIVACY_CACHE_TTL_MS,
+      value: {
+        hideTyping: !!parsed.hideTyping,
+        hideSeen: !!parsed.hideSeen,
+        hideReceived: !!parsed.hideReceived,
+      },
+    }
+  } catch {
+    privacySettingsCache = {
+      expiresAt: Date.now() + PRIVACY_CACHE_TTL_MS,
+      value: {
+        hideTyping: false,
+        hideSeen: false,
+        hideReceived: false,
+      },
+    }
+  }
+  return privacySettingsCache.value
+}
+
+function pickPrivacyRule(url) {
+  if (!url) return null
+  const settings = readPrivacySettings()
+  return PRIVACY_URL_RULES.find((rule) => settings[rule.key] && rule.match(url)) || null
+}
+
+function decodeUploadDataToText(uploadData) {
+  if (!Array.isArray(uploadData) || !uploadData.length) return ''
+  const chunks = []
+  for (const entry of uploadData) {
+    if (!entry) continue
+    if (entry.bytes) {
+      try {
+        if (Buffer.isBuffer(entry.bytes)) chunks.push(entry.bytes)
+        else chunks.push(Buffer.from(entry.bytes))
+      } catch {}
+      continue
+    }
+    if (entry.file) {
+      try {
+        const body = fs.readFileSync(entry.file)
+        if (body && body.length) chunks.push(body)
+      } catch {}
+    }
+  }
+  if (!chunks.length) return ''
+  try { return Buffer.concat(chunks).toString('utf8') } catch { return '' }
+}
+
+function pickPrivacyRuleFromPayload(payloadText) {
+  if (!payloadText) return null
+  const settings = readPrivacySettings()
+  const hay = String(payloadText)
+  if (settings.hideTyping && /(?:\btyping\b|isTyping|is_typing|typing_status|\"type\"\s*:\s*\"typing\"|\"event\"\s*:\s*\"typing\"|\"composing\"\s*:\s*true)/i.test(hay)) {
+    return { key: 'hideTyping' }
+  }
+  if (settings.hideSeen && /(?:\bseen\b|read_receipt|readReceipt|mark[_-]?read|\"seen\"\s*:|\"read\"\s*:|\"readAt\"\s*:)/i.test(hay)) {
+    return { key: 'hideSeen' }
+  }
+  if (settings.hideReceived && /(?:\bdelivered\b|\breceived\b|\brecv\b|receipt|\"delivered\"\s*:|\"received\"\s*:|\"ack\"\s*:)/i.test(hay)) {
+    return { key: 'hideReceived' }
+  }
+  return null
+}
+
+function ensurePrivacyRequestGuards(targetSession) {
+  if (!targetSession || !targetSession.webRequest) return
+  if (privacyGuardInstalledSessions.has(targetSession)) return
+  try {
+    targetSession.webRequest.onBeforeRequest((details, callback) => {
+      try {
+        const rule =
+          pickPrivacyRule(String(details && details.url || '')) ||
+          pickPrivacyRuleFromPayload(decodeUploadDataToText(details && details.uploadData))
+        if (rule) {
+          callback({ cancel: true })
+          return
+        }
+      } catch {}
+      callback({ cancel: false })
+    })
+    privacyGuardInstalledSessions.add(targetSession)
+  } catch {}
+}
 
 function getCloneId() {
+  // Prefer env (set by ZaloMask launcher) as a reliable source.
+  const fromEnv = String(process.env.ZALOMASK_CLONE_ID || '').trim()
+  if (fromEnv) return fromEnv
   const arg = process.argv.find((entry) => String(entry || '').startsWith(CLONE_ARG_PREFIX))
   if (!arg) return ''
   return String(arg.slice(CLONE_ARG_PREFIX.length)).trim()
@@ -50,16 +194,132 @@ function ensureCloneJunction(linkPath, targetPath) {
   }
 }
 
+/** True for Windows directory junctions and symlinks. Node lstat reports both
+ * as symbolic links since v12. We also defensively check the reparse-point
+ * file attribute bit so older Node builds don't follow a junction by mistake. */
+function isReparseEntry(p) {
+  try {
+    const lst = fs.lstatSync(p)
+    if (lst.isSymbolicLink()) return true
+    // Win32 FILE_ATTRIBUTE_REPARSE_POINT = 0x400. Node exposes it as `mode`'s
+    // upper bits via `winattr`; check is best-effort and never throws.
+    if (typeof lst.attrs === 'number' && (lst.attrs & 0x400) !== 0) return true
+    return false
+  } catch {
+    return false
+  }
+}
+
+/** Delete a junction/symlink WITHOUT following it. Critical: do NOT use
+ * fs.rmSync({recursive:true}) here — on Windows it may walk through the
+ * junction and delete the target's contents. */
+function unlinkJunctionSafe(p) {
+  try { fs.rmdirSync(p); return true } catch (_) {}
+  try { fs.unlinkSync(p); return true } catch (_) {}
+  return false
+}
+
+/** Recursively merge the contents of `srcDir` INTO `destDir` using rename when
+ * possible (fast, atomic on the same volume) and falling back to copy+unlink.
+ * Junctions/symlinks at any level are removed (link only, never their target)
+ * because the shim re-creates them on every launch. */
+function mergeDirectoryInto(srcDir, destDir) {
+  let ents
+  try { ents = fs.readdirSync(srcDir, { withFileTypes: true }) } catch { return }
+  try { fs.mkdirSync(destDir, { recursive: true }) } catch {}
+  for (const ent of ents) {
+    const s = path.join(srcDir, ent.name)
+    const d = path.join(destDir, ent.name)
+    if (isReparseEntry(s)) {
+      unlinkJunctionSafe(s)
+      continue
+    }
+    if (ent.isDirectory()) {
+      if (fs.existsSync(d)) {
+        mergeDirectoryInto(s, d)
+      } else {
+        try { fs.renameSync(s, d) } catch { mergeDirectoryInto(s, d) }
+      }
+    } else {
+      try {
+        if (fs.existsSync(d)) { try { fs.unlinkSync(d) } catch {} }
+        fs.renameSync(s, d)
+      } catch {
+        try { fs.copyFileSync(s, d) } catch {}
+        try { fs.unlinkSync(s) } catch {}
+      }
+    }
+  }
+  try { fs.rmdirSync(srcDir) } catch {}
+}
+
+/** Detect & flatten a doubly-nested wrapper that earlier (buggy) shim runs
+ * left behind. We move:
+ *   wrapperRoot/CLONE_ENV_DIR/<cloneId>/X    →  wrapperRoot/X
+ *   wrapperRoot/ZaloData_<cloneId>/X         →  cloneDataRoot/X        (the
+ *      "true" cloneDataRoot at <baseAppData>/ZaloData_<cloneId>)
+ * After this, all data lives at the singly-nested path the new idempotent
+ * shim expects. */
+function migrateDoublyNestedLayout(baseAppData, wrapperRoot, cloneId) {
+  if (!cloneId || !wrapperRoot) return
+  const innerWrapper = path.join(wrapperRoot, CLONE_ENV_DIR, cloneId)
+  if (fs.existsSync(innerWrapper)) {
+    try {
+      mergeDirectoryInto(innerWrapper, wrapperRoot)
+      // rmdirSync (non-recursive) — dir tree is empty by now. NEVER use
+      // rmSync({recursive:true}) here: a stray junction would let Node walk
+      // through it and delete the actual session data.
+      try { fs.rmdirSync(path.join(wrapperRoot, CLONE_ENV_DIR)) } catch {}
+    } catch {}
+  }
+  const innerCloneData = path.join(wrapperRoot, `ZaloData_${cloneId}`)
+  const trueCloneData = path.join(baseAppData, `ZaloData_${cloneId}`)
+  if (innerCloneData !== trueCloneData && fs.existsSync(innerCloneData)) {
+    try {
+      mergeDirectoryInto(innerCloneData, trueCloneData)
+      try { fs.rmdirSync(innerCloneData) } catch {}
+    } catch {}
+  }
+}
+
 function applyCloneAppData() {
   const cloneId = getCloneId()
   if (!cloneId) return
 
   const baseAppData = process.env.APPDATA || app.getPath('appData')
+
+  // Idempotency: if APPDATA already points to our per-clone wrapper, skip
+  // re-wrapping. This prevents the doubly-nested layout that older builds
+  // produced when the shim was loaded again in a child process / after
+  // app.relaunch() (which inherits the parent's APPDATA env var).
+  const expectedSuffix = path.sep + CLONE_ENV_DIR + path.sep + cloneId
+  const normBase = String(baseAppData).replace(/[\\/]+/g, path.sep).replace(/[\\/]+$/, '')
+  if (normBase.toLowerCase().endsWith(expectedSuffix.toLowerCase())) {
+    const wrapperRoot = baseAppData
+    const trueBase = path.dirname(path.dirname(wrapperRoot))
+    cloneDataRoot = process.env.ZALOMASK_CLONE_DATA_ROOT || path.join(trueBase, `ZaloData_${cloneId}`)
+    process.env.ZALOMASK_CLONE_ID = cloneId
+    process.env.ZALOMASK_CLONE_DATA_ROOT = cloneDataRoot
+    process.env.ZALOMASK_CLONE_SEED_PATH = path.join(cloneDataRoot, CLONE_SEED_FILE)
+    try { app.setPath('appData', wrapperRoot) } catch {}
+    try { app.setPath('userData', path.join(wrapperRoot, 'ElectronUserData')) } catch {}
+    try { app.setPath('sessionData', path.join(wrapperRoot, 'ElectronSessionData')) } catch {}
+    return
+  }
+
   const wrapperRoot = path.join(baseAppData, CLONE_ENV_DIR, cloneId)
   cloneDataRoot = path.join(baseAppData, `ZaloData_${cloneId}`)
 
   fs.mkdirSync(cloneDataRoot, { recursive: true })
   fs.mkdirSync(wrapperRoot, { recursive: true })
+
+  // ON-DISK MIGRATION (one-shot): older builds double-wrapped APPDATA, so
+  // existing source profiles have their cookies/Local State at
+  // wrapperRoot/__zalomask_clone_env__/<id>/ElectronSessionData. Flatten that
+  // up to wrapperRoot/ElectronSessionData so the now-singly-wrapped Zalo can
+  // read its own session.
+  try { migrateDoublyNestedLayout(baseAppData, wrapperRoot, cloneId) } catch {}
+
   ensureCloneJunction(path.join(wrapperRoot, 'ZaloData'), cloneDataRoot)
 
   process.env.APPDATA = wrapperRoot
@@ -390,6 +650,7 @@ function bootSessionSnapshotBridge() {
 function startCloneAccountObservers() {
   for (const targetSession of getTrackedSessions()) {
     ensureCloneSessionPreload(targetSession)
+    ensurePrivacyRequestGuards(targetSession)
     try { targetSession.cookies.on('changed', () => scheduleCookieSave()) } catch {}
   }
 
@@ -397,7 +658,10 @@ function startCloneAccountObservers() {
     // Identity is now seeded by the preload before any Zalo script runs, so
     // we just keep the cookie debounce wired up. No more executeJavaScript
     // race against the Zalo bundle.
-    if (win) win.webContents.on('did-finish-load', () => scheduleCookieSave())
+    if (win) {
+      try { ensurePrivacyRequestGuards(win.webContents.session) } catch {}
+      win.webContents.on('did-finish-load', () => scheduleCookieSave())
+    }
   })
 
   app.on('browser-window-focus', () => {
@@ -408,6 +672,7 @@ function startCloneAccountObservers() {
 applyCloneAppData()
 
 if (getCloneId()) {
+  writeCloneShimLoadedMarker()
   const bootAccount = readCloneAccount()
   if (bootAccount) updateProcessCloneImei(bootAccount.imei || bootAccount.sessionIdentity?.zUuid || '')
 

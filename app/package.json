@@ -1,7 +1,7 @@
 {
   "name": "ZaloMask",
   "homepage": "https://zalomask.com/",
-  "version": "26.3.8",
+  "version": "26.3.36",
   "description": "ZaloMask - Multi-account & privacy toolkit cho Zalo PC",
   "engines": {
     "node": "14.20.0",
@@ -16,8 +16,11 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
+    "assert:chromium-bootstrap": "node assert-chromium-bootstrap.js",
+    "clean:zalo-runtime": "node ../scripts/clean-zalo-runtime-pack.js",
+    "predist": "npm run assert:chromium-bootstrap && node ../scripts/patch-zalo-runtime-for-pack.js && npm run clean:zalo-runtime",
     "dist": "electron-builder --win nsis --x64 --publish never",
-    "dist:publish": "electron-builder --win nsis --x64 --publish always"
+    "dist:publish": "npm run predist && electron-builder --win nsis --x64 --publish always"
   },
   "build": {
     "appId": "com.zalomask.app",
@@ -27,12 +30,46 @@
     "files": [
       "**/*",
       "!legacy/**",
-      "!**/node_modules/.cache/**"
+      "!profiles/**",
+      "!dist/**",
+      "!dist-pcfix/**",
+      "!tmp*/**",
+      "!*.zmb",
+      "!*.zlp",
+      "!*.zip",
+      "!*.session-export.json",
+      "!license-state.json",
+      "!app-runtime.log",
+      "!**/node_modules/.cache/**",
+      "!zalo-runtime/**"
     ],
     "extraResources": [
       {
-        "from": "../config.json",
+        "from": "../config.dist.json",
         "to": "config.json"
+      },
+      {
+        "from": "zalo-runtime/",
+        "to": "zalo-runtime/",
+        "filter": [
+          "**/*",
+          "!**/app-repacked.asar",
+          "!**/.asar-extract/**",
+          "!**/app-repacked-pack.asar",
+          "!**/.asar-extract-pack/**",
+          "!**/.asar-patch-done-pack.txt",
+          "!**/.asar-patch-done.txt",
+          "!**/app.asar.backup",
+          "!**/app.asar.directbak",
+          "!**/app.asar.hotfixbak",
+          "!**/app.asar.testbak",
+          "!**/app.asar.testbak2",
+          "!**/app.asar.*bak*",
+          "!**/app.asar.directstamp",
+          "!**/app.asar.hotfixstamp",
+          "!**/app.asar.teststamp",
+          "!**/app.asar.teststamp2"
+        ]
       }
     ],
     "publish": [

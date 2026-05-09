@@ -6,6 +6,7 @@ node_modules/
 # --- Electron build output ---
 app/dist/
 app/out/
+app/dist-pcfix/
 
 # --- Next.js ---
 web/.next/
@@ -30,6 +31,8 @@ profiles/
 # --- User exports / backups ---
 ZaloMask_*.json
 ZaloMask_zalo_web_*.json
+ZaloMask_*.zmb
+ZaloMask_*.zlp
 
 # --- Profile data (chứa cookies + session — không bao giờ commit) ---
 profiles/*/
@@ -58,5 +61,22 @@ Thumbs.db
 
 # --- Misc ---
 Claude Setup.exe
+ZaXSetup-*.exe
 *.pfx
 *.p12
+
+# --- Local temp / inspection ---
+tmp-*/
+
+# Bundled Zalo runtime — populate locally before build, never commit binary
+app/zalo-runtime/*
+!app/zalo-runtime/.gitkeep
+!app/zalo-runtime/README.md
+
+# Leftovers from one-off debugging / asar patcher runs
+app/zalo-runtime/.asar-extract/
+app/zalo-runtime/.asar-patch-done.txt
+app/zalo-runtime/app-repacked.asar
+app/bridge-traffic.log
+app/proxy-bridge-*.log
+**/ProgramData/ZaloMask/proxy/

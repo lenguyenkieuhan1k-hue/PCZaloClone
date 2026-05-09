@@ -35,8 +35,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Assert Chromium bootstrap (cache + spellcheck hooks)
+        run: node assert-chromium-bootstrap.js
+
       - name: Install electron-builder
         run: npm install --no-save electron-builder@^26.8.1
+
+      - name: Pre-patch Zalo runtime (Program Files read-only OK at install)
+        run: node ../scripts/patch-zalo-runtime-for-pack.js
+
+      - name: Strip Zalo runtime junk (smaller NSIS)
+        run: node ../scripts/clean-zalo-runtime-pack.js
 
       - name: Setup code signing certificate (if available)
         if: env.SIGNING_CERT_BASE64 != ''

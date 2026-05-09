@@ -38,6 +38,7 @@
   </div>
 
   <div id="statusBar" class="status-bar">Sẵn sàng</div>
+  <div id="toastContainer" class="toast-container"></div>
 
   <section class="tab-panel active" id="tab-clone">
     <div class="list-toolbar">
@@ -152,13 +153,14 @@
             <span class="settings-row-sub" id="healthSummary">Đang kiểm tra...</span>
           </div>
           <button class="acc-btn" id="btnHealthRefresh">Làm mới</button>
+          <button class="acc-btn" id="btnExportDiagnostics" title="ZIP: manifest + runtime + log (đã che password)">📎 Xuất chẩn đoán</button>
         </div>
       </div>
 
       <div class="settings-section">
         <p class="settings-section-title">License</p>
         <label class="field-label" for="licenseKeyInput">Activation key</label>
-        <input type="text" class="field-input" id="licenseKeyInput" placeholder="Nhập key kích hoạt" />
+        <input type="text" spellcheck="false" autocomplete="off" class="field-input" id="licenseKeyInput" placeholder="Nhập key kích hoạt" />
         <div class="tool-grid" style="margin-top:10px">
           <button class="tool-card" id="btnLicenseActivate">Kích hoạt</button>
           <button class="tool-card" id="btnLicenseHeartbeat">Heartbeat</button>
@@ -178,7 +180,7 @@
       </div>
       <div class="modal-body">
         <label class="field-label">Tên hiển thị</label>
-        <input type="text" class="field-input" id="inputDisplayName" maxlength="60" placeholder="Ví dụ: Zalo Web 3" />
+        <input type="text" spellcheck="false" autocomplete="off" class="field-input" id="inputDisplayName" maxlength="60" placeholder="Ví dụ: Zalo 3" />
 
         <div class="proxy-block">
           <div class="proxy-head">
@@ -189,7 +191,7 @@
             </label>
           </div>
           <div id="addProxyFields" class="proxy-fields hidden">
-            <input type="text" class="field-input" id="addProxyRaw" placeholder="Dán nhanh: host:port:user:pass hoặc user:pass@host:port" />
+            <input type="text" spellcheck="false" autocomplete="off" class="field-input" id="addProxyRaw" placeholder="Dán nhanh: host:port:user:pass hoặc user:pass@host:port" />
             <div class="proxy-inline-tools">
               <select class="field-input" id="addProxyProtocol">
                 <option value="HTTP">HTTP</option>
@@ -200,8 +202,8 @@
               <button class="acc-btn" id="addProxyCheck" type="button">Kiểm tra</button>
             </div>
             <div class="proxy-row-two">
-              <input type="text" class="field-input" id="addProxyHost" placeholder="Host" />
-              <input type="number" class="field-input" id="addProxyPort" placeholder="Port" min="1" max="65535" />
+              <input type="text" spellcheck="false" autocomplete="off" class="field-input" id="addProxyHost" placeholder="Host" />
+              <input type="number" spellcheck="false" autocomplete="off" class="field-input" id="addProxyPort" placeholder="Port" min="1" max="65535" />
             </div>
             <div class="proxy-auth-row">
               <label class="switch">
@@ -211,8 +213,8 @@
               <span class="field-label" style="margin:0">Proxy có tài khoản</span>
             </div>
             <div id="addProxyAuthFields" class="proxy-row-two hidden">
-              <input type="text" class="field-input" id="addProxyUsername" placeholder="Username" />
-              <input type="text" class="field-input" id="addProxyPassword" placeholder="Password" />
+              <input type="text" spellcheck="false" autocomplete="off" class="field-input" id="addProxyUsername" placeholder="Username" />
+              <input type="text" spellcheck="false" autocomplete="off" class="field-input" id="addProxyPassword" placeholder="Password" />
             </div>
             <p class="settings-row-sub" id="addProxyCheckResult"></p>
           </div>
@@ -241,7 +243,7 @@
           </label>
         </div>
         <div id="proxyFields" class="proxy-fields hidden">
-          <input type="text" class="field-input" id="proxyRaw" placeholder="Dán nhanh: host:port:user:pass hoặc user:pass@host:port" />
+          <input type="text" spellcheck="false" autocomplete="off" class="field-input" id="proxyRaw" placeholder="Dán nhanh: host:port:user:pass hoặc user:pass@host:port" />
           <div class="proxy-inline-tools">
             <select class="field-input" id="proxyProtocol">
               <option value="HTTP">HTTP</option>
@@ -251,8 +253,8 @@
             <button class="acc-btn" id="proxyQuickPaste" type="button">Dán nhanh</button>
           </div>
           <div class="proxy-row-two">
-            <input type="text" class="field-input" id="proxyHost" placeholder="Host" />
-            <input type="number" class="field-input" id="proxyPort" placeholder="Port" min="1" max="65535" />
+            <input type="text" spellcheck="false" autocomplete="off" class="field-input" id="proxyHost" placeholder="Host" />
+            <input type="number" spellcheck="false" autocomplete="off" class="field-input" id="proxyPort" placeholder="Port" min="1" max="65535" />
           </div>
           <div class="proxy-auth-row">
             <label class="switch">
@@ -262,8 +264,8 @@
             <span class="field-label" style="margin:0">Proxy có tài khoản</span>
           </div>
           <div id="proxyAuthFields" class="proxy-row-two hidden">
-            <input type="text" class="field-input" id="proxyUsername" placeholder="Username" />
-            <input type="text" class="field-input" id="proxyPassword" placeholder="Password" />
+            <input type="text" spellcheck="false" autocomplete="off" class="field-input" id="proxyUsername" placeholder="Username" />
+            <input type="text" spellcheck="false" autocomplete="off" class="field-input" id="proxyPassword" placeholder="Password" />
           </div>
         </div>
         <p class="settings-row-sub" id="proxyCheckResult" style="margin-top:10px"></p>
@@ -289,6 +291,7 @@
           <button class="link-btn" id="backupClearAll">Bỏ chọn</button>
         </div>
         <div class="backup-list" id="backupList"></div>
+        <p id="backupActionHint" class="settings-row-sub backup-action-hint hidden" aria-live="polite"></p>
       </div>
       <div class="modal-footer">
         <button class="acc-btn" id="backupCancel">Hủy</button>
@@ -297,18 +300,20 @@
     </div>
   </div>
 
-  <div class="modal-overlay hidden" id="profileInfoOverlay">
-    <div class="modal profile-info-modal">
+  <div class="modal-overlay hidden" id="renameOverlay">
+    <div class="modal" style="max-width:420px">
       <div class="modal-header">
-        <span class="modal-title">Thông tin profile</span>
-        <button class="modal-close" id="profileInfoClose">&#215;</button>
+        <span class="modal-title">Đổi tên hiển thị</span>
+        <button class="modal-close" id="renameClose">&#215;</button>
       </div>
       <div class="modal-body">
-        <pre class="profile-info-pre" id="profileInfoContent"></pre>
+        <p class="settings-row-sub" id="renameProfileHint" style="margin-bottom:8px"></p>
+        <label class="field-label">Tên hiển thị mới</label>
+        <input type="text" spellcheck="false" autocomplete="off" class="field-input" id="renameDisplayName" maxlength="120" placeholder="Ví dụ: Zalo công ty" />
       </div>
       <div class="modal-footer">
-        <button class="acc-btn" id="profileInfoCopy">Copy JSON</button>
-        <button class="btn-primary" id="profileInfoOk">Đóng</button>
+        <button class="acc-btn" id="renameCancel">Hủy</button>
+        <button class="btn-primary" id="renameSave">Lưu</button>
       </div>
     </div>
   </div>

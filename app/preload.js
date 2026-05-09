@@ -5,15 +5,18 @@ contextBridge.exposeInMainWorld('api', {
   // Profile CRUD
   listProfiles: () => ipcRenderer.invoke('list-profiles'),
   getProfileInfo: (profileName) => ipcRenderer.invoke('get-profile-info', { profileName }),
-  addProfile: (displayName, proxy) => ipcRenderer.invoke('add-profile', { displayName, proxy }),
+  addProfile: (displayName, proxy, launchMode) => ipcRenderer.invoke('add-profile', { displayName, proxy, launchMode }),
+  cloneRuntimeStatus: () => ipcRenderer.invoke('clone-runtime-status'),
   openProfile: (profileName) => ipcRenderer.invoke('open-profile', { profileName }),
   launchAll: () => ipcRenderer.invoke('launch-all'),
   deleteProfile: (profileName) => ipcRenderer.invoke('delete-profile', { profileName }),
+  renameProfile: (profileName, displayName) => ipcRenderer.invoke('rename-profile', { profileName, displayName }),
   updateProxy: (profileName, proxy) => ipcRenderer.invoke('update-proxy', { profileName, proxy }),
   checkProxy: (proxy) => ipcRenderer.invoke('check-proxy', { proxy }),
   exportProfile: (profileName) => ipcRenderer.invoke('export-profile', { profileName }),
   exportProfiles: (profileNames) => ipcRenderer.invoke('export-profiles', { profileNames }),
   importProfile: () => ipcRenderer.invoke('import-profile'),
+  createProfileShortcut: (profileName) => ipcRenderer.invoke('create-profile-shortcut', { profileName }),
   openProfilesFolder: () => ipcRenderer.invoke('open-profiles-folder'),
 
   // Per-profile privacy
@@ -24,6 +27,10 @@ contextBridge.exposeInMainWorld('api', {
   getSettings: () => ipcRenderer.invoke('get-settings'),
   setSetting: (key, value) => ipcRenderer.invoke('set-setting', { key, value }),
   getSystemHealth: () => ipcRenderer.invoke('get-system-health'),
+  exportDiagnostics: () => ipcRenderer.invoke('export-diagnostics'),
+  logToMain: (level, message, detail) =>
+    ipcRenderer.invoke('client-log', { level, message, detail }),
+  nudgeComposite: () => ipcRenderer.invoke('nudge-composite'),
 
   // License
   getLicenseStatus: () => ipcRenderer.invoke('get-license-status'),

@@ -317,6 +317,8 @@ select {
   align-items: center;
   justify-content: center;
   z-index: 20;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
 }
 
 .hidden { display: none !important; }
@@ -327,6 +329,8 @@ select {
   border-radius: 12px;
   box-shadow: 0 10px 42px rgba(0, 0, 0, 0.2);
   overflow: hidden;
+  isolation: isolate;
+  contain: layout style;
 }
 
 .modal,
@@ -544,11 +548,16 @@ select {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4);
   display: flex; align-items: center; justify-content: center;
   z-index: 9999;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
 }
 .modal-overlay.hidden { display: none; }
 .modal {
   background: #fff; border-radius: 12px; min-width: 320px;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25); overflow: hidden;
+  pointer-events: auto;
+  isolation: isolate;
+  contain: layout style;
 }
 .modal-header {
   display: flex; justify-content: space-between; align-items: center;
@@ -560,7 +569,8 @@ select {
   cursor: pointer; color: #666;
 }
 .modal-close:hover { color: #1566FF; }
-.modal-body { padding: 12px 18px; }
+.modal-body { padding: 12px 18px; pointer-events: auto; }
+.field-input { pointer-events: auto; }
 .modal-footer { padding: 12px 18px; display: flex; }
 
 .tool-card.primary {
@@ -584,4 +594,71 @@ select {
 .update-bar-fill {
   height: 100%; width: 0%; background: #1566FF;
   transition: width 200ms ease;
+}
+
+/* Backup modal feedback */
+.backup-action-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #1566ff;
+  min-height: 18px;
+}
+.backup-action-hint.hidden {
+  display: none !important;
+}
+.backup-action-hint.is-error {
+  color: #b42318;
+}
+
+/* Toasts — luôn nổi trên modal (đặt overlay z-index cao ~9999) */
+.toast-container {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10060;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  pointer-events: none;
+  max-width: min(440px, calc(100vw - 28px));
+}
+.toast-container .toast {
+  pointer-events: auto;
+}
+.toast {
+  padding: 12px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.22);
+  animation: toast-in 0.2s ease;
+  cursor: pointer;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.toast-info {
+  background: #1e293b;
+  color: #f8fafc;
+}
+.toast-success {
+  background: #047857;
+  color: #fff;
+}
+.toast-error {
+  background: #b91c1c;
+  color: #fff;
+}
+.toast:active {
+  filter: brightness(1.06);
 }

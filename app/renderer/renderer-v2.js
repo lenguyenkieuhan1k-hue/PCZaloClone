@@ -1,13 +1,16 @@
 const $ = (id) => document.getElementById(id)
 let profiles = []
 let proxyTarget = null
+let renameTarget = null
 let backupSelected = new Set()
 let currentProfileInfoJson = ''
 let refreshTimer = null
 let refreshInFlight = false
 let refreshPending = false
-let modalFocusTimer = null
-let lastModalFocusId = 'inputDisplayName'
+let licenseRefreshInFlight = false
+let licenseRefreshPending = false
+let delayedUpdateCheckTimer = null
+let addProfileInFlight = false
 
 function esc(value) {
   return String(value || '')
@@ -17,10 +20,63 @@ function esc(value) {
     .replace(/"/g, '&quot;')
 }
 
-function setStatus(text) {
-  // Avoid repaint churn while user is interacting with modals (typing jitter).
-  if (isModalOpen()) return
+function requestMainWindowRepaint() {
+  window.setTimeout(() => {
+    try {
+      if (typeof window.api?.nudgeComposite === 'function') window.api.nudgeComposite().catch(() => {})
+    } catch (_) {}
+  }, 60)
+}
+
+/** Chỉ các modal có ô nhập / chọn nhiều — tránh flicker thanh trạng thái khi tương tác form */
+function statusBarPausedByTypingModal() {
+  const ids = ['modalOverlay', 'proxyOverlay', 'renameOverlay', 'backupOverlay', 'privacyOverlay']
+  return ids.some((id) => {
+    const el = $(id)
+    return !!el && !el.classList.contains('hidden')
+  })
+}
+
+/** Focus đang ở ô nhập liệu (tab Cài đặt, v.v.) — tránh IPC + render làm giật caret */
+function isTypingInField() {
+  const el = document.activeElement
+  if (!el || !el.tagName) return false
+  const t = el.tagName.toLowerCase()
+  if (t === 'textarea') return true
+  if (t === 'select') return true
+  if (t === 'input') {
+    const type = String(el.type || 'text').toLowerCase()
+    if (['button', 'submit', 'checkbox', 'radio', 'file', 'hidden', 'reset', 'image'].includes(type)) return false
+    return true
+  }
+  return false
+}
+
+function shouldDeferRefresh() {
+  return isModalOpen() || isTypingInField()
+}
+
+function setStatus(text, opts = {}) {
+  const force = !!opts.force
+  if (!force && statusBarPausedByTypingModal()) return
   $('statusBar').textContent = text || 'Sẵn sàng'
+}
+
+function fileBasename(fullPath) {
+  const s = String(fullPath || '').trim().replace(/\\/g, '/')
+  const i = s.lastIndexOf('/')
+  return i >= 0 ? s.slice(i + 1) : s
+}
+
+function showToast(message, type = 'info', duration = 4300) {
+  const container = $('toastContainer')
+  if (!container || !message) return
+  const toast = document.createElement('div')
+  toast.className = `toast toast-${type}`
+  toast.textContent = message
+  toast.addEventListener('click', () => toast.remove())
+  container.appendChild(toast)
+  window.setTimeout(() => toast.remove(), duration)
 }
 
 function normalizeProtocol(raw) {
@@ -158,6 +214,11 @@ function switchTab(tab) {
 }
 
 async function refresh() {
+  // Không gọi listProfiles (IPC) khi đang modal / gõ ô nhập — tránh lag và giật focus
+  if (shouldDeferRefresh()) {
+    refreshPending = true
+    return
+  }
   if (refreshInFlight) {
     refreshPending = true
     return
@@ -172,9 +233,7 @@ async function refresh() {
     }
     profiles = rs.profiles || []
 
-    // Avoid stealing typing focus/caret while user is interacting in modal
-    // (Add profile / Proxy / etc). Defer DOM render until modal is closed.
-    if (isModalOpen()) {
+    if (shouldDeferRefresh()) {
       refreshPending = true
       return
     }
@@ -183,7 +242,7 @@ async function refresh() {
     setStatus(`Đã tải ${profiles.length} profile`)
   } finally {
     refreshInFlight = false
-    if (refreshPending && !isModalOpen()) {
+    if (refreshPending && !shouldDeferRefresh()) {
       refreshPending = false
       void refresh()
     }
@@ -191,36 +250,40 @@ async function refresh() {
 }
 
 function isModalOpen() {
-  const modalIds = ['modalOverlay', 'proxyOverlay', 'backupOverlay', 'profileInfoOverlay', 'privacyOverlay', 'updateOverlay', 'licenseKickedOverlay']
+  const modalIds = ['modalOverlay', 'proxyOverlay', 'backupOverlay', 'renameOverlay', 'privacyOverlay', 'updateOverlay', 'licenseKickedOverlay']
   return modalIds.some((id) => {
     const el = $(id)
     return !!el && !el.classList.contains('hidden')
   })
 }
 
-function stopModalFocusGuard() {
-  if (modalFocusTimer) {
-    clearTimeout(modalFocusTimer)
-    modalFocusTimer = null
-  }
+function focusModalInput(id) {
+  requestAnimationFrame(() => {
+    const el = document.getElementById(id)
+    if (!el || typeof el.focus !== 'function') return
+    try {
+      el.focus({ preventScroll: true })
+    } catch (_) {
+      el.focus()
+    }
+  })
 }
 
-function startModalFocusGuard() {
-  stopModalFocusGuard()
-  const overlay = $('modalOverlay')
-  if (!overlay || overlay.classList.contains('hidden')) return
-  modalFocusTimer = setTimeout(() => {
-    modalFocusTimer = null
-    const active = document.activeElement
-    if (active && overlay.contains(active)) return
-    const preferred = $(lastModalFocusId) || $('inputDisplayName')
-    if (preferred && typeof preferred.focus === 'function') preferred.focus()
-  }, 160)
+/** Click dark backdrop closes some modals (not add-account — chỉ đóng bằng X / Hủy). */
+function setupModalBackdropDismiss() {
+  document.addEventListener('click', (e) => {
+    const t = e.target
+    if (!t?.classList?.contains('modal-overlay')) return
+    const overlay = t
+    if (overlay.id === 'proxyOverlay' && !overlay.classList.contains('hidden')) closeProxyModal()
+    else if (overlay.id === 'backupOverlay' && !overlay.classList.contains('hidden')) closeBackupModal()
+    else if (overlay.id === 'renameOverlay' && !overlay.classList.contains('hidden')) closeRenameModal()
+  })
 }
 
 function scheduleRefresh(options = {}) {
   const allowDuringModal = !!options.allowDuringModal
-  if (!allowDuringModal && isModalOpen()) {
+  if (!allowDuringModal && shouldDeferRefresh()) {
     refreshPending = true
     return
   }
@@ -250,9 +313,9 @@ function renderProfiles() {
       </div>
       <div class="acc-actions">
         <button class="acc-btn" data-act="open" data-name="${esc(p.profileName)}">Mở</button>
-        <button class="acc-btn" data-act="info" data-name="${esc(p.profileName)}">Info</button>
         <button class="acc-btn" data-act="check-proxy" data-name="${esc(p.profileName)}">Check</button>
         <button class="acc-btn" data-act="proxy" data-name="${esc(p.profileName)}">Proxy</button>
+        <button class="acc-btn" data-act="rename" data-name="${esc(p.profileName)}">Đổi tên</button>
         <button class="acc-btn" data-act="export" data-name="${esc(p.profileName)}">Xuất</button>
         <button class="acc-btn" data-act="privacy" data-name="${esc(p.profileName)}">Riêng tư</button>
         <button class="acc-btn" data-act="delete" data-name="${esc(p.profileName)}">Xóa</button>
@@ -286,17 +349,23 @@ async function refreshCloudStatus() {
 async function handleCloudUpload() {
   const btn = $('btnCloudUpload')
   if (btn) { btn.disabled = true; btn.textContent = 'Đang tải lên…' }
-  setStatus('Đang upload profiles lên cloud…')
+  setStatus('Đang upload profiles lên cloud…', { force: true })
   try {
     const rs = await window.api.cloudSyncUpload()
     if (rs.ok) {
-      setStatus(`Đã upload ${rs.profileCount} profile lên cloud.`)
+      const msg = `Đã upload ${rs.profileCount} profile lên cloud.`
+      setStatus(msg, { force: true })
+      showToast(msg, 'success', 5500)
     } else {
-      setStatus('Lỗi upload: ' + (rs.message || 'unknown'))
+      const msg = rs.message || 'unknown'
+      setStatus('Lỗi upload: ' + msg, { force: true })
+      showToast('Upload cloud thất bại: ' + msg, 'error', 6500)
     }
     await refreshCloudStatus()
   } catch (err) {
-    setStatus('Lỗi: ' + (err?.message || 'unknown'))
+    const msg = err?.message || 'unknown'
+    setStatus('Lỗi: ' + msg, { force: true })
+    showToast('Upload cloud lỗi: ' + msg, 'error', 6500)
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Tải lên' }
   }
@@ -305,25 +374,31 @@ async function handleCloudUpload() {
 async function handleCloudDownload() {
   const btn = $('btnCloudDownload')
   if (btn) { btn.disabled = true; btn.textContent = 'Đang đồng bộ…' }
-  setStatus('Đang tải profiles từ cloud về…')
+  setStatus('Đang tải profiles từ cloud về…', { force: true })
   try {
     const rs = await window.api.cloudSyncDownload()
     if (rs.ok) {
-      setStatus(`Đã đồng bộ ${rs.imported} profile về máy này.`)
+      const msg = `Đã đồng bộ ${rs.imported} profile về máy này.`
+      setStatus(msg, { force: true })
+      showToast(msg, 'success', 5500)
       await refresh()
     } else {
-      setStatus('Lỗi download: ' + (rs.message || 'unknown'))
+      const emsg = rs.message || 'unknown'
+      setStatus('Lỗi download: ' + emsg, { force: true })
+      showToast('Đồng bộ về thất bại: ' + emsg, 'error', 6500)
     }
     await refreshCloudStatus()
   } catch (err) {
-    setStatus('Lỗi: ' + (err?.message || 'unknown'))
+    const msg = err?.message || 'unknown'
+    setStatus('Lỗi: ' + msg, { force: true })
+    showToast('Đồng bộ về lỗi: ' + msg, 'error', 6500)
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Đồng bộ về' }
   }
 }
 
 function openAddModal() {
-  $('inputDisplayName').value = `Zalo Web ${profiles.length + 1}`
+  $('inputDisplayName').value = `Zalo PC ${profiles.length + 1}`
   $('addProxyRaw').value = ''
   $('addProxyEnabled').checked = false
   $('addProxyProtocol').value = 'HTTP'
@@ -335,16 +410,13 @@ function openAddModal() {
   $('addProxyCheckResult').textContent = ''
   syncAddProxyUi()
   $('modalOverlay').classList.remove('hidden')
-  const input = $('inputDisplayName')
-  input.focus()
-  requestAnimationFrame(() => input.focus())
-  startModalFocusGuard()
+  focusModalInput('inputDisplayName')
 }
 
 function closeAddModal() {
   $('modalOverlay').classList.add('hidden')
-  stopModalFocusGuard()
   if (refreshPending) scheduleRefresh({ allowDuringModal: true })
+  requestMainWindowRepaint()
 }
 
 function syncAddProxyUi() {
@@ -379,21 +451,60 @@ function collectAddProxy() {
 }
 
 async function handleAdd() {
-  const name = $('inputDisplayName').value.trim() || `Zalo Web ${profiles.length + 1}`
+  if (addProfileInFlight) return
+  addProfileInFlight = true
+  const addBtn = $('btnModalAdd')
+  const cancelBtn = $('modalCancel')
+  const closeBtn = $('modalClose')
+  try {
+    if (addBtn) { addBtn.disabled = true; addBtn.textContent = 'Đang tạo…' }
+    if (cancelBtn) cancelBtn.disabled = true
+    if (closeBtn) closeBtn.disabled = true
+
+  const name = $('inputDisplayName').value.trim() || `Zalo PC ${profiles.length + 1}`
   const proxy = collectAddProxy()
   if (proxy.enabled && (!proxy.host || !proxy.port)) {
     alert('Proxy thiếu host hoặc port')
     return
   }
-  setStatus('Đang tạo profile...')
-  const rs = await window.api.addProfile(name, proxy)
+  try {
+    const rtRs = await window.api.cloneRuntimeStatus()
+    const rt = rtRs?.status || {}
+    if (!rtRs?.ok || !rt.ok) {
+      const msg = rt.message || rtRs?.message || 'unknown'
+      alert('Runtime Zalo PC chưa sẵn sàng: ' + msg)
+      setStatus('Runtime chưa sẵn sàng', { force: true })
+      showToast('Runtime chưa sẵn sàng', 'error', 5000)
+      return
+    }
+  } catch (e) {
+    alert('Không kiểm tra được runtime: ' + (e?.message || 'unknown'))
+    setStatus('Lỗi kiểm tra runtime', { force: true })
+    showToast('Không kiểm tra được runtime', 'error', 5000)
+    return
+  }
+  // Always PC mode — Zalo runtime bundled inside app
+  const launchMode = 'pc'
+  setStatus('Đang tạo profile…', { force: true })
+  const rs = await window.api.addProfile(name, proxy, launchMode)
   if (!rs || !rs.ok) {
-    alert('Tạo profile thất bại: ' + (rs?.message || 'unknown'))
-    setStatus('Tạo profile thất bại')
+    const msg = rs?.message || 'unknown'
+    alert('Tạo profile thất bại: ' + msg)
+    setStatus('Tạo profile thất bại', { force: true })
+    showToast('Tạo profile thất bại: ' + msg, 'error', 5500)
     return
   }
   closeAddModal()
+  showToast('Đã tạo profile mới', 'success')
+  setStatus('Đã tạo profile mới', { force: true })
   await refresh()
+  } finally {
+    addProfileInFlight = false
+    // If modal is still open (e.g. validation error), re-enable controls.
+    if (addBtn) { addBtn.disabled = false; addBtn.textContent = 'THÊM' }
+    if (cancelBtn) cancelBtn.disabled = false
+    if (closeBtn) closeBtn.disabled = false
+  }
 }
 
 async function handleAddProxyCheck() {
@@ -413,17 +524,42 @@ async function handleAddProxyCheck() {
 }
 
 async function handleImport() {
-  setStatus('Đang nhập JSON...')
+  setStatus('Đang nhập package/profile…', { force: true })
   const rs = await window.api.importProfile()
   if (!rs || !rs.ok) {
     if (rs?.message === 'Đã huỷ') {
-      setStatus('Đã huỷ nhập')
+      setStatus('Đã huỷ nhập', { force: true })
       return
     }
-    alert('Nhập thất bại: ' + (rs?.message || 'unknown'))
-    setStatus('Nhập thất bại')
+    const msg = rs?.message || 'unknown'
+    alert('Nhập thất bại: ' + msg)
+    setStatus('Nhập thất bại', { force: true })
+    showToast('Nhập thất bại: ' + msg, 'error', 6500)
     return
   }
+  const checks = Array.isArray(rs.restoreChecks) ? rs.restoreChecks : []
+  const verifyWarnings = Array.isArray(rs.verifyWarnings) ? rs.verifyWarnings : []
+  if (checks.length > 0) {
+    const lines = checks.map((item) => {
+      const status = item.likelyRestored ? 'OK' : 'CAN KIEM TRA LAI'
+      let line = `${item.profileName}: ${status} (checklist ${item.score || 0}%)`
+      const h = Array.isArray(item.hints) ? item.hints.filter(Boolean) : []
+      if (h.length) line += `\n  • ${h.join('\n  • ')}`
+      return line
+    })
+    const warningText = verifyWarnings.length > 0
+      ? `\n\nLưu ý: ${verifyWarnings.length} tệp runtime biến động (log/lock/journal) lệch checksum/size đã được bỏ qua an toàn.`
+      : ''
+    const scoreNote = '\n\n— % “checklist” = tỷ lệ các mục kiểm tra file trên đĩa (ZaloData/Cookies/LevelDB…), không phải % dữ liệu đã copy.\n— Sang máy khác mà bị đăng nhập lại chủ yếu do khóa cookie (DPAPI): cần file xuất có cookieKey và máy đích áp DPAPI thành công (xem gợi ý phía trên).'
+    alert(`Kết quả khôi phục:\n- ${lines.join('\n- ')}${warningText}${scoreNote}`)
+    const weakCount = checks.filter((x) => !x.likelyRestored).length
+    if (weakCount > 0) {
+      setStatus(`Đã nhập ${checks.length} profile, ${weakCount} profile cần kiểm tra đăng nhập`, { force: true })
+    } else {
+      setStatus(`Đã nhập ${checks.length} profile, dữ liệu khôi phục tốt`, { force: true })
+    }
+  }
+  showToast('Nhập profile thành công', 'success')
   await refresh()
 }
 
@@ -443,11 +579,40 @@ function renderBackupList() {
   }).join('')
 }
 
+function setBackupModalBusy(busy, msg = '', opts = {}) {
+  const hint = $('backupActionHint')
+  const err = !!opts.error
+  if (hint) {
+    if (!busy && !msg) {
+      hint.textContent = ''
+      hint.classList.add('hidden')
+      hint.classList.remove('is-error')
+    } else if (msg) {
+      hint.textContent = msg
+      hint.classList.remove('hidden')
+      hint.classList.toggle('is-error', err)
+    }
+  }
+  const btn = $('backupConfirm')
+  if (btn) {
+    btn.disabled = !!busy
+    btn.textContent = busy ? 'Đang sao lưu…' : 'SAO LƯU'
+  }
+  ;['backupCancel', 'backupClose', 'backupSelectAll', 'backupClearAll'].forEach((id) => {
+    const el = $(id)
+    if (el) el.disabled = !!busy
+  })
+  document.querySelectorAll('#backupList input[type="checkbox"]').forEach((el) => {
+    el.disabled = !!busy
+  })
+}
+
 function openBackupModal() {
   if (!profiles.length) {
     alert('Chưa có profile để sao lưu')
     return
   }
+  setBackupModalBusy(false)
   backupSelected = new Set(profiles.map((p) => p.profileName))
   renderBackupList()
   $('backupOverlay').classList.remove('hidden')
@@ -456,6 +621,46 @@ function openBackupModal() {
 function closeBackupModal() {
   $('backupOverlay').classList.add('hidden')
   if (refreshPending) scheduleRefresh({ allowDuringModal: true })
+  requestMainWindowRepaint()
+}
+
+function openRenameModal(profileName) {
+  const p = profiles.find((x) => x.profileName === profileName)
+  if (!p) return
+  renameTarget = profileName
+  $('renameProfileHint').textContent = `Mã thư mục nội bộ (không đổi): ${profileName}`
+  $('renameDisplayName').value = p.displayName || profileName
+  $('renameOverlay').classList.remove('hidden')
+  focusModalInput('renameDisplayName')
+}
+
+function closeRenameModal() {
+  renameTarget = null
+  $('renameOverlay').classList.add('hidden')
+  if (refreshPending) scheduleRefresh({ allowDuringModal: true })
+  requestMainWindowRepaint()
+}
+
+async function handleRenameSave() {
+  if (!renameTarget) return
+  const displayName = $('renameDisplayName').value.trim()
+  if (!displayName) {
+    alert('Nhập tên hiển thị')
+    return
+  }
+  if (typeof window.api.renameProfile !== 'function') {
+    alert('Bản app này chưa hỗ trợ đổi tên')
+    return
+  }
+  const rs = await window.api.renameProfile(renameTarget, displayName)
+  if (!rs?.ok) {
+    alert(rs?.message || 'Đổi tên thất bại')
+    return
+  }
+  closeRenameModal()
+  setStatus('Đã đổi tên hiển thị')
+  showToast('Đã đổi tên hiển thị', 'success')
+  await refresh()
 }
 
 async function handleExportSelected() {
@@ -464,16 +669,50 @@ async function handleExportSelected() {
     alert('Bạn chưa chọn profile nào')
     return
   }
-  setStatus('Đang sao lưu profile đã chọn...')
-  const rs = await window.api.exportProfiles(selected)
-  if (!rs || !rs.ok) {
-    if (rs?.message !== 'Đã huỷ') alert('Sao lưu thất bại: ' + (rs?.message || 'unknown'))
-    setStatus('Sao lưu thất bại')
-    return
+  setBackupModalBusy(true, 'Đang đóng gói… Có thể mất vài giây (đang tắt Zalo profile nếu đang chạy).')
+  setStatus('Đang sao lưu profile đã chọn…', { force: true })
+  try {
+    const rs = await window.api.exportProfiles(selected)
+    if (!rs || !rs.ok) {
+      const cancelled = rs?.message === 'Đã huỷ'
+      if (!cancelled) {
+        const msg = rs?.message || 'Sao lưu thất bại'
+        setBackupModalBusy(false, msg, { error: true })
+        showToast(msg, 'error', 6500)
+        setStatus(msg, { force: true })
+      } else {
+        setBackupModalBusy(false)
+        setStatus('Đã huỷ sao lưu', { force: true })
+      }
+      return
+    }
+    const base = rs.filePath ? fileBasename(rs.filePath) : ''
+    const n = rs.count || selected.length
+    const okMsg = base
+      ? `Đã lưu file "${base}" (${n} profile).`
+      : `Đã sao lưu ${n} profile.`
+    setBackupModalBusy(false)
+    closeBackupModal()
+    setStatus(okMsg, { force: true })
+    showToast(okMsg, 'success', 6500)
+    const missingKey = Array.isArray(rs.profilesMissingCookieKey) ? rs.profilesMissingCookieKey : []
+    if (missingKey.length) {
+      const elevated = !!rs.exportElevated
+      showToast(
+        elevated
+          ? `Đã lưu file nhưng không trích được khóa cookie cho: ${missingKey.join(', ')}. ZaloMask đang chạy với quyền Administrator — thoát hẳn app và mở lại bình thường (KHÔNG chọn "Run as administrator"), rồi xuất lại để sang máy khác giữ phiên.`
+          : `Đã lưu nhưng không trích được khóa cookie cho: ${missingKey.join(', ')}. Sang máy khác thường phải đăng nhập lại — đóng Zalo trước khi xuất; nếu vẫn lỗi, phiên Zalo có thể dùng mã hoá App-Bound (không hỗ trợ xuất khóa kiểu cũ).`,
+        'info',
+        16000,
+      )
+    }
+    await refresh()
+  } catch (err) {
+    const msg = err?.message || 'Lỗi không xác định khi sao lưu'
+    setBackupModalBusy(false, msg, { error: true })
+    showToast(msg, 'error', 6500)
+    setStatus(msg, { force: true })
   }
-  closeBackupModal()
-  setStatus(`Đã sao lưu và xoá ${rs.count || selected.length} profile`)
-  await refresh()
 }
 
 async function handleListAction(event) {
@@ -484,10 +723,35 @@ async function handleListAction(event) {
   if (!act || !profileName) return
 
   if (act === 'open') {
-    setStatus('Đang mở profile...')
+    setStatus('Đang mở profile…', { force: true })
     const rs = await window.api.openProfile(profileName)
-    if (!rs || !rs.ok) alert('Mở profile thất bại: ' + (rs?.message || 'unknown'))
-    setStatus('Sẵn sàng')
+    if (!rs || !rs.ok) {
+      const msg = rs?.message || 'unknown'
+      alert('Mở profile thất bại: ' + msg)
+      showToast('Mở profile thất bại', 'error', 5000)
+      setStatus('Mở profile thất bại', { force: true })
+    } else {
+      let toastMsg = 'Đã mở Zalo cho profile này'
+      let toastKind = 'success'
+      let toastDur = 4500
+      if (rs.proxyBypassed) {
+        toastMsg = 'Đã mở Zalo (đã tạm tắt proxy theo lựa chọn của bạn)'
+        toastKind = 'warning'
+        toastDur = 6500
+      } else if (rs.proxyFallback?.mode === 'url-auth') {
+        toastMsg = 'Đã mở Zalo (proxy bridge fail, dùng URL auth thay thế)'
+        toastKind = 'warning'
+        toastDur = 6500
+      } else if (rs.proxyFallback?.mode === 'no-proxy') {
+        toastMsg = 'Đã mở Zalo (proxy bridge fail, dùng kết nối trực tiếp)'
+        toastKind = 'warning'
+        toastDur = 6500
+      } else if (rs.alreadyRunning) {
+        toastMsg = 'Profile đang mở — đã đưa cửa sổ Zalo ra trước'
+      }
+      showToast(toastMsg, toastKind, toastDur)
+      setStatus('Đã mở profile', { force: true })
+    }
     return
   }
 
@@ -497,8 +761,8 @@ async function handleListAction(event) {
     return
   }
 
-  if (act === 'info') {
-    await openProfileInfoModal(profileName)
+  if (act === 'rename') {
+    openRenameModal(profileName)
     return
   }
 
@@ -509,21 +773,50 @@ async function handleListAction(event) {
       alert('Profile này đang tắt proxy')
       return
     }
-    setStatus('Đang kiểm tra proxy...')
+    setStatus('Đang kiểm tra proxy…', { force: true })
     const rs = await window.api.checkProxy(proxy)
-    if (rs?.ok) alert(`Proxy live: ${rs.ip || 'ok'}`)
-    else alert(`Proxy lỗi: ${rs?.message || 'Không hoạt động'}`)
-    setStatus('Sẵn sàng')
+    if (rs?.ok) {
+      const msg = `Proxy hoạt động — IP: ${rs.ip || 'ok'}`
+      alert(`Proxy live: ${rs.ip || 'ok'}`)
+      showToast(msg, 'success', 4500)
+      setStatus(msg, { force: true })
+    } else {
+      const msg = rs?.message || 'Không hoạt động'
+      alert(`Proxy lỗi: ${msg}`)
+      showToast('Proxy không qua được kiểm tra', 'error', 5500)
+      setStatus('Proxy lỗi: ' + msg, { force: true })
+    }
     return
   }
 
   if (act === 'export') {
-    setStatus('Đang xuất profile...')
+    setStatus('Đang xuất profile…', { force: true })
     const rs = await window.api.exportProfile(profileName)
     if (!rs || !rs.ok) {
-      if (rs?.message !== 'Đã huỷ') alert('Xuất profile thất bại: ' + (rs?.message || 'unknown'))
+      if (rs?.message !== 'Đã huỷ') {
+        const msg = rs?.message || 'unknown'
+        alert('Xuất profile thất bại: ' + msg)
+        showToast('Xuất thất bại: ' + msg, 'error', 6500)
+        setStatus('Xuất profile thất bại', { force: true })
+      } else {
+        setStatus('Đã huỷ xuất', { force: true })
+      }
     } else {
-      setStatus(`Đã xuất và xoá profile: ${profileName}`)
+      const base = rs.filePath ? fileBasename(rs.filePath) : ''
+      const okMsg = base ? `Đã lưu "${base}"` : `Đã xuất profile ${profileName}`
+      setStatus(okMsg, { force: true })
+      showToast(okMsg, 'success', 6500)
+      const missingKey = Array.isArray(rs.profilesMissingCookieKey) ? rs.profilesMissingCookieKey : []
+      if (missingKey.length) {
+        const elevated = !!rs.exportElevated
+        showToast(
+          elevated
+            ? `Đã lưu file nhưng không trích được khóa cookie cho: ${missingKey.join(', ')}. ZaloMask đang chạy với quyền Administrator — thoát hẳn app và mở lại bình thường (KHÔNG chọn "Run as administrator"), rồi xuất lại để sang máy khác giữ phiên.`
+            : `Đã lưu nhưng không trích được khóa cookie cho: ${missingKey.join(', ')}. Sang máy khác thường phải đăng nhập lại — đóng Zalo trước khi xuất; nếu vẫn lỗi, phiên Zalo có thể dùng mã hoá App-Bound (không hỗ trợ xuất khóa kiểu cũ).`,
+          'info',
+          16000,
+        )
+      }
       await refresh()
     }
     return
@@ -536,40 +829,19 @@ async function handleListAction(event) {
 
   if (act === 'delete') {
     if (!confirm('Xóa profile này?')) return
-    setStatus('Đang xóa profile...')
+    setStatus('Đang xóa profile…', { force: true })
     const rs = await window.api.deleteProfile(profileName)
-    if (!rs || !rs.ok) alert('Xóa thất bại: ' + (rs?.message || 'unknown'))
+    if (!rs || !rs.ok) {
+      const msg = rs?.message || 'unknown'
+      alert('Xóa thất bại: ' + msg)
+      showToast('Xóa profile thất bại', 'error', 5500)
+      setStatus('Xóa thất bại', { force: true })
+    } else {
+      showToast(rs.pending ? 'Đang xóa profile…' : 'Đã xóa profile', rs.pending ? 'info' : 'success', 5000)
+      setStatus(rs.pending ? 'Đang xóa profile (nền)…' : 'Đã xóa profile', { force: true })
+    }
     await refresh()
   }
-}
-
-async function openProfileInfoModal(profileName) {
-  const rs = await window.api.getProfileInfo(profileName)
-  if (!rs || !rs.ok) {
-    alert('Không lấy được thông tin profile: ' + (rs?.message || 'unknown'))
-    return
-  }
-  const info = rs.info || {}
-  currentProfileInfoJson = JSON.stringify(info, null, 2)
-  $('profileInfoContent').textContent = currentProfileInfoJson
-  $('profileInfoOverlay').classList.remove('hidden')
-}
-
-function closeProfileInfoModal() {
-  $('profileInfoOverlay').classList.add('hidden')
-  if (refreshPending) scheduleRefresh({ allowDuringModal: true })
-}
-
-async function copyProfileInfoJson() {
-  if (!currentProfileInfoJson) return
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(currentProfileInfoJson)
-      setStatus('Đã copy JSON thông tin profile')
-      return
-    }
-  } catch (_error) {}
-  alert('Trình duyệt không cho phép copy tự động. Bạn có thể chọn tay trong khung JSON.')
 }
 
 function openProxyModal(profile) {
@@ -593,6 +865,7 @@ function closeProxyModal() {
   proxyTarget = null
   $('proxyOverlay').classList.add('hidden')
   if (refreshPending) scheduleRefresh({ allowDuringModal: true })
+  requestMainWindowRepaint()
 }
 
 function syncProxyUi() {
@@ -635,10 +908,15 @@ async function handleProxySave() {
   }
   const rs = await window.api.updateProxy(proxyTarget, proxy)
   if (!rs || !rs.ok) {
-    alert('Lưu proxy thất bại: ' + (rs?.message || 'unknown'))
+    const msg = rs?.message || 'unknown'
+    alert('Lưu proxy thất bại: ' + msg)
+    showToast('Lưu proxy thất bại', 'error', 5500)
+    setStatus('Lưu proxy thất bại', { force: true })
     return
   }
   closeProxyModal()
+  showToast('Đã lưu proxy cho profile', 'success', 4500)
+  setStatus('Đã cập nhật proxy', { force: true })
   await refresh()
 }
 
@@ -679,12 +957,20 @@ async function bindSettings() {
 
 async function refreshHealth() {
   const rs = await window.api.getSystemHealth()
+  let runtimeText = 'Runtime: chưa kiểm tra'
+  try {
+    const rtRs = await window.api.cloneRuntimeStatus()
+    const rt = rtRs?.status || {}
+    runtimeText = rt.ok ? 'Runtime: OK' : `Runtime: ${rt.message || 'chưa sẵn sàng'}`
+  } catch (_e) {
+    runtimeText = 'Runtime: lỗi kiểm tra'
+  }
   if (!rs || !rs.ok) {
-    $('healthSummary').textContent = 'Không lấy được trạng thái'
+    $('healthSummary').textContent = `Không lấy được trạng thái • ${runtimeText}`
     return
   }
   const info = rs.info || {}
-  $('healthSummary').textContent = `OK • ${info.profileCount || 0} profile web • app ${info.appVersion || 'v2'}`
+  $('healthSummary').textContent = `OK • ${info.profileCount || 0} profile PC • app ${info.appVersion || 'v2'} • ${runtimeText}`
 }
 
 function licenseStatusLabel(status) {
@@ -767,13 +1053,34 @@ function renderLicenseState(state, runtime) {
 }
 
 async function refreshLicenseStatus() {
-  const rs = await window.api.getLicenseStatus()
-  if (!rs || !rs.ok) {
-    $('licenseSummary').textContent = 'Không lấy được trạng thái license.'
-    renderHeaderLicenseBadge({}, {})
+  if (licenseRefreshInFlight) {
+    licenseRefreshPending = true
     return
   }
-  renderLicenseState(rs.state || {}, rs)
+  licenseRefreshInFlight = true
+  const rs = await window.api.getLicenseStatus()
+  try {
+    if (!rs || !rs.ok) {
+      $('licenseSummary').textContent = 'Không lấy được trạng thái license.'
+      renderHeaderLicenseBadge({}, {})
+      return
+    }
+    renderLicenseState(rs.state || {}, rs)
+  } finally {
+    licenseRefreshInFlight = false
+    if (licenseRefreshPending) {
+      licenseRefreshPending = false
+      refreshLicenseStatus().catch(() => {})
+    }
+  }
+}
+
+function scheduleLicenseRefresh() {
+  if (licenseRefreshInFlight) {
+    licenseRefreshPending = true
+    return
+  }
+  refreshLicenseStatus().catch(() => {})
 }
 
 async function handleLicenseActivate() {
@@ -782,16 +1089,19 @@ async function handleLicenseActivate() {
     alert('Nhập key kích hoạt trước')
     return
   }
-  setStatus('Đang kích hoạt license...')
+  setStatus('Đang kích hoạt license…', { force: true })
   const rs = await window.api.activateLicense(key)
   if (!rs || !rs.ok) {
-    alert('Kích hoạt thất bại: ' + (rs?.message || 'unknown'))
-    setStatus('Kích hoạt thất bại')
+    const msg = rs?.message || 'unknown'
+    alert('Kích hoạt thất bại: ' + msg)
+    setStatus('Kích hoạt thất bại', { force: true })
+    showToast('Kích hoạt license thất bại', 'error', 5500)
     return
   }
   $('licenseKeyInput').value = ''
   await refreshLicenseStatus()
-  setStatus('Kích hoạt license thành công')
+  setStatus('Kích hoạt license thành công', { force: true })
+  showToast('Đã kích hoạt license', 'success', 5000)
 }
 
 async function handleLicenseHeartbeat() {
@@ -824,16 +1134,8 @@ function bind() {
   $('btnAddAccount').addEventListener('click', openAddModal)
   $('modalClose').addEventListener('click', closeAddModal)
   $('modalCancel').addEventListener('click', closeAddModal)
-  $('modalOverlay').addEventListener('click', (e) => {
-    if (e.target !== $('modalOverlay')) return
-    const input = $(lastModalFocusId) || $('inputDisplayName')
-    if (input && typeof input.focus === 'function') input.focus()
-  })
-  $('modalOverlay').addEventListener('focusin', (e) => {
-    const target = e.target
-    if (!target || !target.id) return
-    lastModalFocusId = target.id
-  })
+  // Do NOT preventDefault on overlay mousedown - it blocks focus into inputs
+  // and causes the "modal feels frozen" bug. Let mouse events propagate normally.
   $('btnModalAdd').addEventListener('click', handleAdd)
   $('addProxyEnabled').addEventListener('change', syncAddProxyUi)
   $('addProxyAuthEnabled').addEventListener('change', syncAddProxyUi)
@@ -855,15 +1157,22 @@ function bind() {
   $('btnImport').addEventListener('click', handleImport)
   $('btnExport').addEventListener('click', openBackupModal)
   $('btnLaunchAll').addEventListener('click', async () => {
-    setStatus('Đang mở tất cả profile...')
+    setStatus('Đang mở tất cả profile…', { force: true })
     const rs = await window.api.launchAll()
-    setStatus(rs?.message || 'Đã mở tất cả')
+    const msg = rs?.message || 'Đã mở tất cả'
+    setStatus(msg, { force: true })
+    if (rs?.ok !== false) showToast(msg, 'success', 5000)
+    else showToast(msg, 'error', 5500)
   })
   $('btnOpenFolder').addEventListener('click', () => window.api.openProfilesFolder())
   $('toolOpenFolder').addEventListener('click', () => window.api.openProfilesFolder())
   $('toolLaunchAll').addEventListener('click', async () => {
+    setStatus('Đang mở tất cả profile…', { force: true })
     const rs = await window.api.launchAll()
-    setStatus(rs?.message || 'Đã mở tất cả')
+    const msg = rs?.message || 'Đã mở tất cả'
+    setStatus(msg, { force: true })
+    if (rs?.ok !== false) showToast(msg, 'success', 5000)
+    else showToast(msg, 'error', 5500)
   })
   $('toolImport').addEventListener('click', handleImport)
   $('toolExport').addEventListener('click', openBackupModal)
@@ -871,6 +1180,29 @@ function bind() {
   $('btnCloudUpload').addEventListener('click', () => handleCloudUpload().catch(() => {}))
   $('btnCloudDownload').addEventListener('click', () => handleCloudDownload().catch(() => {}))
   $('btnHealthRefresh').addEventListener('click', () => refreshHealth())
+  const btnDiag = $('btnExportDiagnostics')
+  if (btnDiag) {
+    btnDiag.addEventListener('click', async () => {
+      setStatus('Đang gói báo cáo chẩn đoán...', { force: true })
+      try {
+        const rs = await window.api.exportDiagnostics()
+        if (rs?.canceled) {
+          setStatus('', { force: true })
+          return
+        }
+        if (rs?.ok && rs.path) {
+          showToast(`Đã lưu chẩn đoán: ${rs.path}`, 'success', 6000)
+          setStatus('Đã xuất ZIP chẩn đoán', { force: true })
+        } else {
+          showToast(rs?.message || 'Xuất thất bại', 'error', 6000)
+          setStatus(rs?.message || 'Xuất chẩn đoán thất bại', { force: true })
+        }
+      } catch (e) {
+        showToast(e?.message || 'Lỗi', 'error', 5000)
+        setStatus('', { force: true })
+      }
+    })
+  }
   $('accountList').addEventListener('click', handleListAction)
 
   $('btnLicenseActivate').addEventListener('click', () => { handleLicenseActivate().catch(() => {}) })
@@ -880,11 +1212,7 @@ function bind() {
 
   $('proxyClose').addEventListener('click', closeProxyModal)
   $('proxyCancel').addEventListener('click', closeProxyModal)
-  $('proxyOverlay').addEventListener('click', (e) => {
-    if (e.target !== $('proxyOverlay')) return
-    const input = $('proxyRaw') || $('proxyHost')
-    if (input && typeof input.focus === 'function') input.focus()
-  })
+  // Do NOT preventDefault on overlay mousedown - it blocks focus into inputs.
   $('proxyEnabled').addEventListener('change', syncProxyUi)
   $('proxyAuthEnabled').addEventListener('change', syncProxyUi)
   $('proxyRaw').addEventListener('blur', () => {
@@ -924,10 +1252,9 @@ function bind() {
   })
   $('backupConfirm').addEventListener('click', handleExportSelected)
 
-  $('profileInfoClose').addEventListener('click', closeProfileInfoModal)
-  $('profileInfoOk').addEventListener('click', closeProfileInfoModal)
-  $('profileInfoCopy').addEventListener('click', () => { copyProfileInfoJson().catch(() => {}) })
-  $('profileInfoOverlay').addEventListener('click', (e) => { if (e.target === $('profileInfoOverlay')) closeProfileInfoModal() })
+  $('renameClose').addEventListener('click', closeRenameModal)
+  $('renameCancel').addEventListener('click', closeRenameModal)
+  $('renameSave').addEventListener('click', () => { handleRenameSave().catch(() => {}) })
 
   if (typeof window.api.onProfileUpdated === 'function') {
     window.api.onProfileUpdated(() => { scheduleRefresh() })
@@ -937,13 +1264,67 @@ function bind() {
     window.api.onProfilesReloaded(() => { scheduleRefresh({ allowDuringModal: true }) })
   }
 
+  document.addEventListener('keydown', (e) => {
+    if ((e.key !== 'Escape' && e.key !== 'Esc') || !isModalOpen()) return
+    e.preventDefault()
+    e.stopPropagation()
+    if (!$('modalOverlay').classList.contains('hidden')) closeAddModal()
+    else if (!$('proxyOverlay').classList.contains('hidden')) closeProxyModal()
+    else if (!$('backupOverlay').classList.contains('hidden')) closeBackupModal()
+    else if (!$('renameOverlay').classList.contains('hidden')) closeRenameModal()
+    else if (!$('privacyOverlay').classList.contains('hidden')) closePrivacyModal()
+    else if (!$('updateOverlay').classList.contains('hidden')) hideUpdateModal()
+    else if (!$('licenseKickedOverlay').classList.contains('hidden')) {
+      $('licenseKickedOverlay').classList.add('hidden')
+    }
+  }, true)
+
+  setupModalBackdropDismiss()
+
+  document.addEventListener(
+    'focusout',
+    () => {
+      window.setTimeout(() => {
+        if (refreshPending && !shouldDeferRefresh()) scheduleRefresh()
+      }, 120)
+    },
+    true,
+  )
+
   if (typeof window.api.onLicenseUpdated === 'function') {
-    window.api.onLicenseUpdated(() => {
-      refreshLicenseStatus().catch(() => {})
-    })
+    window.api.onLicenseUpdated(() => { scheduleLicenseRefresh() })
   }
 }
 
+let rendererDiagForwardingInstalled = false
+function installRendererDiagnosticsForwarding() {
+  if (rendererDiagForwardingInstalled) return
+  rendererDiagForwardingInstalled = true
+  const send = (level, message, detail) => {
+    try {
+      if (typeof window.api?.logToMain === 'function') {
+        window.api.logToMain(level, String(message || '').slice(0, 2000), detail)
+      }
+    } catch (_) {}
+  }
+  window.addEventListener('error', (ev) => {
+    send('error', ev.message || 'window.error', {
+      filename: ev.filename,
+      lineno: ev.lineno,
+      colno: ev.colno,
+      stack: ev.error && ev.error.stack ? String(ev.error.stack).slice(0, 4500) : '',
+    })
+  })
+  window.addEventListener('unhandledrejection', (ev) => {
+    const r = ev.reason
+    const msg = r && typeof r === 'object' && r.message ? r.message : String(r)
+    send('unhandledrejection', msg.slice(0, 2000), {
+      stack: r && typeof r === 'object' && r.stack ? String(r.stack).slice(0, 4500) : String(r).slice(0, 2000),
+    })
+  })
+}
+
+installRendererDiagnosticsForwarding()
 bind()
 bindSettings().catch(() => {})
 refresh().catch(() => setStatus('Lỗi khởi tạo'))
@@ -968,6 +1349,7 @@ function showUpdateModal(info) {
 
 function hideUpdateModal() {
   $('updateOverlay').classList.add('hidden')
+  requestMainWindowRepaint()
 }
 
 async function handleUpdateConfirm() {
@@ -1024,19 +1406,22 @@ function bindUpdate() {
     })
   }
 
-  // Force a foreground check at startup so users don't need to wait for
-  // the background timer before seeing update availability.
+  // Delay the foreground update check to reduce startup churn in the main window.
   if (typeof window.api.updateCheck === 'function') {
-    window.api.updateCheck().then((rs) => {
-      if (!rs || !rs.ok || !rs.hasUpdate) return
-      _updateAvailable = rs
-      const pillEl = $('updatePill')
-      if (pillEl) {
-        pillEl.classList.remove('hidden')
-        pillEl.title = 'Bản ' + (rs.remoteVersion || '?') + ' đã sẵn sàng'
-      }
-      showUpdateModal(rs)
-    }).catch(() => {})
+    if (delayedUpdateCheckTimer) clearTimeout(delayedUpdateCheckTimer)
+    delayedUpdateCheckTimer = setTimeout(() => {
+      delayedUpdateCheckTimer = null
+      window.api.updateCheck().then((rs) => {
+        if (!rs || !rs.ok || !rs.hasUpdate) return
+        _updateAvailable = rs
+        const pillEl = $('updatePill')
+        if (pillEl) {
+          pillEl.classList.remove('hidden')
+          pillEl.title = 'Bản ' + (rs.remoteVersion || '?') + ' đã sẵn sàng'
+        }
+        showUpdateModal(rs)
+      }).catch(() => {})
+    }, 15000)
   }
 }
 
@@ -1104,6 +1489,7 @@ async function openPrivacyModal(profileName) {
 function closePrivacyModal() {
   $('privacyOverlay').classList.add('hidden')
   _privacyTarget = null
+  requestMainWindowRepaint()
 }
 
 async function handlePrivacyToggle(key, value) {
