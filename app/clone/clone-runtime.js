@@ -1422,6 +1422,12 @@ async function launchPcProfile(profileName, opts = {}) {
 function buildRuntimeStatus(runtimeDir) {
   if (!runtimeDir) {
     let message = 'Runtime bundle chưa có. Chạy scripts/setup-zalo-runtime.ps1 trước khi build.'
+    if (app.isPackaged) {
+      message =
+        'Thiếu Zalo PC trong bản cài (installer không chứa đủ runtime). ' +
+        'Tải lại bản ZaloMask-Setup từ GitHub Release hoặc trang chủ (bản build CI đã đóng gói runtime). ' +
+        'Nếu tự build: chạy scripts/setup-zalo-runtime.ps1 rồi npm run dist.'
+    }
     if (lastRuntimePickFailure && lastRuntimePickFailure.kind === 'user-copy-failed') {
       const ud = String(lastRuntimePickFailure.userDest || '')
       const src = String(lastRuntimePickFailure.source || '')

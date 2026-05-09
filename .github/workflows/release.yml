@@ -35,7 +35,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # app/zalo-runtime/ không commit (gitignore). Không chạy bước này → installer thiếu Zalo.exe, máy khách báo "Runtime bundle chưa có".
+      - name: Bundle Zalo PC runtime into app/zalo-runtime (CI)
+        working-directory: ${{ github.workspace }}
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+          & "$env:GITHUB_WORKSPACE\scripts\setup-zalo-runtime.ps1"
+
       - name: Assert Chromium bootstrap (cache + spellcheck hooks)
+        working-directory: app
         run: node assert-chromium-bootstrap.js
 
       - name: Install electron-builder
