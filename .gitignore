@@ -80,3 +80,11 @@ app/zalo-runtime/app-repacked.asar
 app/bridge-traffic.log
 app/proxy-bridge-*.log
 **/ProgramData/ZaloMask/proxy/
+
+# --- Root clutter (keep exports/logs out of repo root) ---
+/*.zmb
+/zax_export_*.json
+/ZaloMask-diagnostics-*.zip
+/_inspect*.zip
+/_vvvvv*.zip
+/[0-9]*.zip
