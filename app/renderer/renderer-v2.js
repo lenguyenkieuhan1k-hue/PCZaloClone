@@ -24,37 +24,19 @@ function esc(value) {
 }
 
 /* ---------------------------------------------------------------------------
- * Frameless BrowserWindow + Windows DWM/Chromium modal: một số bản Electron/OS
+ * Frameless BrowserWindow + Windows DWM/Chromium: một số bản Electron/OS
  * gặp ô nhập “đơ” cho tới khi repaint (minimize hoặc chụp màn hình có thể hết).
  *
  * Chiến lược nhẹ — không gọi resizeHack từ main trong lúc gõ modal (xem cảnh báo
  * trong main.v2.js → nudgeMainWindowComposite):
  *   - IPC `nudge-composite` → webContents.invalidate() (preload: nudgeComposite).
  *   - Sau khi bỏ class `hidden` trên overlay modal: afterModalSurfaceShown() + focus ô.
- *   - Các ô trong MODAL_COMPOSITE_INPUT_IDS: focus + input debounce để invalidate.
- *
- * Khi thêm modal có field text: thêm id vào MODAL_COMPOSITE_INPUT_IDS; mở overlay
- * xong gọi afterModalSurfaceShown() (tương tự openAddModal / openProxyModal).
+ *   - Mọi `input.field-input` / `select.field-input` (kể cả ô license trên tab Cài đặt):
+ *     focus + input debounce → invalidate (delegation, không cần liệt kê từng id).
  * -------------------------------------------------------------------------- */
 
 const MODAL_COMPOSITE_NUDGE_MS = 180
 let modalCompositeNudgeTimer = null
-
-/** `input` ids (khớp index-v2.html) cần workaround composite. */
-const MODAL_COMPOSITE_INPUT_IDS = [
-  'inputDisplayName',
-  'addProxyRaw',
-  'addProxyHost',
-  'addProxyPort',
-  'addProxyUsername',
-  'addProxyPassword',
-  'proxyRaw',
-  'proxyHost',
-  'proxyPort',
-  'proxyUsername',
-  'proxyPassword',
-  'renameDisplayName',
-]
 
 function requestMainWindowRepaint() {
   window.setTimeout(() => {
@@ -85,12 +67,24 @@ function scheduleModalCompositeNudgeDebounced() {
 }
 
 function bindModalCompositeWorkaroundInputs() {
-  for (const id of MODAL_COMPOSITE_INPUT_IDS) {
-    const el = $(id)
-    if (!el || typeof el.addEventListener !== 'function') continue
-    el.addEventListener('focus', () => nudgeCompositeLight())
-    el.addEventListener('input', () => scheduleModalCompositeNudgeDebounced())
+  const shouldNudge = (el) => {
+    if (!el || typeof el.matches !== 'function') return false
+    return el.matches('input.field-input, select.field-input, textarea.field-input')
   }
+  document.addEventListener(
+    'focusin',
+    (e) => {
+      if (shouldNudge(e.target)) nudgeCompositeLight()
+    },
+    true,
+  )
+  document.addEventListener(
+    'input',
+    (e) => {
+      if (shouldNudge(e.target)) scheduleModalCompositeNudgeDebounced()
+    },
+    true,
+  )
 }
 
 /** Chỉ các modal có ô nhập / chọn nhiều — tránh flicker thanh trạng thái khi tương tác form */
@@ -342,7 +336,7 @@ function focusModalInput(id) {
   })
 }
 
-/** Click dark backdrop closes some modals (not add-account — chỉ đóng bằng X / Hủy). */
+/** Click dark backdrop đóng một số modal (không áp dụng Thêm Zalo / Đổi tên — giống nhau: chỉ X / Hủy / Esc). */
 function setupModalBackdropDismiss() {
   document.addEventListener('click', (e) => {
     const t = e.target
@@ -350,7 +344,6 @@ function setupModalBackdropDismiss() {
     const overlay = t
     if (overlay.id === 'proxyOverlay' && !overlay.classList.contains('hidden')) closeProxyModal()
     else if (overlay.id === 'backupOverlay' && !overlay.classList.contains('hidden')) closeBackupModal()
-    else if (overlay.id === 'renameOverlay' && !overlay.classList.contains('hidden')) closeRenameModal()
   })
 }
 

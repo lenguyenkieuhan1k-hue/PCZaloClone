@@ -52,20 +52,29 @@ function getConfig(rootConfigPath) {
   }
 }
 
-function getGithubConfig(rootConfigPath) {
-  const cfg = getConfig(rootConfigPath)
-  const gh = cfg[CONFIG_GITHUB_KEY] || {}
+function getGithubFromCfg(cfg) {
+  const c = cfg && typeof cfg === 'object' ? cfg : {}
+  const gh = c[CONFIG_GITHUB_KEY] || {}
   return {
     owner: String(gh.owner || '').trim(),
     repo: String(gh.repo || '').trim(),
-    prerelease: Boolean(gh.prerelease)
+    prerelease: Boolean(gh.prerelease),
   }
 }
 
-function getManifestUrl(rootConfigPath) {
-  const cfg = getConfig(rootConfigPath)
-  const u = cfg.updates && typeof cfg.updates === 'object' ? cfg.updates.manifestUrl : ''
+function getManifestUrlFromCfg(cfg) {
+  const c = cfg && typeof cfg === 'object' ? cfg : {}
+  const u = c.updates && typeof c.updates === 'object' ? c.updates.manifestUrl : ''
   return String(u || '').trim()
+}
+
+/** Deprecated path-only getters — giữ để đọc một file cụ thể; checkForUpdates dùng loadConfig merged. */
+function getGithubConfig(rootConfigPath) {
+  return getGithubFromCfg(getConfig(rootConfigPath))
+}
+
+function getManifestUrl(rootConfigPath) {
+  return getManifestUrlFromCfg(getConfig(rootConfigPath))
 }
 
 /* ---------- HTTP ---------- */
@@ -274,14 +283,24 @@ async function checkForUpdatesFromManifest(manifestUrl, localVersion) {
 
 async function checkForUpdates(opts) {
   opts = opts || {}
-  const rootConfigPath = opts.configPath
-  if (!rootConfigPath) throw new Error('checkForUpdates: configPath bắt buộc')
+  let cfg = {}
+  if (typeof opts.loadConfig === 'function') {
+    try {
+      cfg = opts.loadConfig() || {}
+    } catch (_) {
+      cfg = {}
+    }
+  } else if (opts.configPath) {
+    cfg = getConfig(opts.configPath)
+  } else {
+    throw new Error('checkForUpdates: cần configPath hoặc loadConfig')
+  }
   const localVersion = app.getVersion()
   cachedRelease = null
   cachedManifest = null
   updateChannel = ''
 
-  const manifestUrl = getManifestUrl(rootConfigPath)
+  const manifestUrl = getManifestUrlFromCfg(cfg)
   if (manifestUrl) {
     if (!/^https:\/\//i.test(manifestUrl)) {
       lastError = 'updates.manifestUrl phải là HTTPS.'
@@ -295,7 +314,7 @@ async function checkForUpdates(opts) {
     }
   }
 
-  const gh = getGithubConfig(rootConfigPath)
+  const gh = getGithubFromCfg(cfg)
   try {
     const release = await fetchLatestRelease(gh.owner, gh.repo, gh.prerelease)
     cachedRelease = release
@@ -323,7 +342,10 @@ async function downloadUpdate(opts) {
   opts = opts || {}
   if (downloading) return { ok: false, message: 'Đang tải, vui lòng đợi.' }
   if (!cachedRelease && !cachedManifest) {
-    const checked = await checkForUpdates({ configPath: opts.configPath })
+    const checked = await checkForUpdates({
+      configPath: opts.configPath,
+      loadConfig: opts.loadConfig,
+    })
     if (!checked.ok || !checked.hasUpdate) {
       return { ok: false, message: 'Không có bản cập nhật để tải.' }
     }
@@ -404,9 +426,9 @@ function installAndQuit() {
 
 function registerIpc(opts) {
   opts = opts || {}
-  const configPath = opts.configPath
-  ipcMain.handle('update-check', async () => checkForUpdates({ configPath }))
-  ipcMain.handle('update-download', async () => downloadUpdate({ configPath }))
+  const bound = { configPath: opts.configPath, loadConfig: opts.loadConfig }
+  ipcMain.handle('update-check', async () => checkForUpdates(bound))
+  ipcMain.handle('update-download', async () => downloadUpdate(bound))
   ipcMain.handle('update-install', async () => installAndQuit())
   ipcMain.handle('update-status', async () => ({
     ok: true,
@@ -432,11 +454,11 @@ function registerIpc(opts) {
 
 function startBackgroundChecks(opts) {
   opts = opts || {}
-  const configPath = opts.configPath
+  const bound = { configPath: opts.configPath, loadConfig: opts.loadConfig }
   // First check is delayed 30s after app boot to avoid stealing IO from
   // Zalo's startup and to give the Sentry/perflog systems time to settle.
   setTimeout(async () => {
-    const result = await checkForUpdates({ configPath })
+    const result = await checkForUpdates(bound)
     if (result.ok && result.hasUpdate) {
       broadcastUpdateAvailable({
         localVersion: result.localVersion,
@@ -447,7 +469,7 @@ function startBackgroundChecks(opts) {
   }, 30 * 1000)
 
   setInterval(async () => {
-    const result = await checkForUpdates({ configPath })
+    const result = await checkForUpdates(bound)
     if (result.ok && result.hasUpdate) {
       broadcastUpdateAvailable({
         localVersion: result.localVersion,

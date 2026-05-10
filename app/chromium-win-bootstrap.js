@@ -14,8 +14,14 @@ const os = require('os')
 const path = require('path')
 
 function applyEarlyChromiumSwitches(app) {
+  // Ưu tiên userData của app — ít lock/AV và quyền ghi đồng nhất packaged vs npm start.
   try {
-    const cacheDir = path.join(os.tmpdir(), 'ZaloMask', 'chromium-cache')
+    let cacheDir = ''
+    try {
+      cacheDir = path.join(app.getPath('userData'), 'chromium-cache')
+    } catch (_) {
+      cacheDir = path.join(os.tmpdir(), 'ZaloMask', 'chromium-cache')
+    }
     fs.mkdirSync(cacheDir, { recursive: true })
     app.commandLine.appendSwitch('disk-cache-dir', cacheDir)
   } catch (_) {}
