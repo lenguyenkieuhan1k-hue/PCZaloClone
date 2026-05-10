@@ -1,13 +1,16 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
+using System.Text;
 using System.Windows;
+using System.Windows.Forms;
 using WpfMsg = System.Windows.MessageBox;
 using WinFolder = System.Windows.Forms.FolderBrowserDialog;
 using ZaloMask.Shell.Services;
 
 namespace ZaloMask.Shell;
 
-public partial class MainWindow : Window
+public partial class MainWindow : System.Windows.Window
 {
     private string _profilesDir = "";
 
@@ -26,18 +29,35 @@ public partial class MainWindow : Window
         ProfileList.ItemsSource = _rows;
         _profilesDir = DataPaths.ResolveProfilesDirectory();
         ProfilesPathBox.Text = _profilesDir;
-        ReloadProfiles();
+        ReloadProfiles(showMissingPathDialog: false);
     }
 
-    private void BtnPickRoot_OnClick(object sender, System.Windows.RoutedEventArgs e)
+    private static string SafeFolderBrowserInitialPath(string profilesDir)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(profilesDir))
+            {
+                var full = Path.GetFullPath(profilesDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                if (Directory.Exists(full)) return full;
+                var parent = Directory.GetParent(full)?.FullName;
+                if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent)) return parent;
+            }
+        }
+        catch { /* ignore */ }
+
+        return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
+    private void BtnPickRoot_OnClick(object sender, RoutedEventArgs e)
     {
         using var dlg = new WinFolder
         {
             Description = "Chọn thư mục chứa profiles (hoặc chọn chính thư mục profiles)",
             UseDescriptionForTitle = true,
-            InitialDirectory = Directory.Exists(_profilesDir) ? Path.GetFullPath(Path.Combine(_profilesDir, "..")) : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            InitialDirectory = SafeFolderBrowserInitialPath(_profilesDir),
         };
-        if (dlg.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
+        if (dlg.ShowDialog() != DialogResult.OK) return;
 
         var picked = dlg.SelectedPath.Trim();
         if (string.IsNullOrEmpty(picked)) return;
@@ -56,27 +76,62 @@ public partial class MainWindow : Window
 
         DataPaths.StoreCustomProfilesDirectory(_profilesDir);
         ProfilesPathBox.Text = _profilesDir;
-        ReloadProfiles();
+        ReloadProfiles(showMissingPathDialog: false);
+        if (!Directory.Exists(_profilesDir))
+        {
+            WpfMsg.Show("Đường dẫn profiles không khả dụng sau khi chọn.", "ZaloMask Shell",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
-    private void BtnRefresh_OnClick(object sender, System.Windows.RoutedEventArgs e)
+    private void BtnRefresh_OnClick(object sender, RoutedEventArgs e)
     {
         _profilesDir = DataPaths.ResolveProfilesDirectory();
         ProfilesPathBox.Text = _profilesDir;
-        ReloadProfiles();
+        ReloadProfiles(showMissingPathDialog: true);
     }
 
-    private void ReloadProfiles()
+    /// <summary>Đọc profile; chỉ báo popup khi thiếu thư mục nếu user bấm Làm mới (showMissingPathDialog).</summary>
+    private void ReloadProfiles(bool showMissingPathDialog)
     {
         _rows.Clear();
+        ProfileStatusHint.Text =
+            $"Đường dẫn: {_profilesDir}\nĐọc thư mục con + meta.json (displayName, launchMode).\nĐang làm rỗng danh sách…";
+
         if (!Directory.Exists(_profilesDir))
         {
-            WpfMsg.Show("Thư mục profiles không tồn tại:\n" + _profilesDir, "ZaloMask Shell",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            ProfileStatusHint.Foreground = System.Windows.Media.Brushes.Firebrick;
+            ProfileStatusHint.Text =
+                $"Thư mục profiles chưa tồn tại:\n{_profilesDir}\n\n→ Bấm «Chọn gốc dữ liệu…» hoặc đặt ZALOMASK_REPO_ROOT.";
+            Title = "ZaloMask Shell — Preview (.NET) • 0 profile";
+            if (showMissingPathDialog)
+            {
+                WpfMsg.Show("Thư mục profiles không tồn tại:\n" + _profilesDir, "ZaloMask Shell",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
             return;
         }
 
-        foreach (var dir in Directory.EnumerateDirectories(_profilesDir))
+        ProfileStatusHint.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x66, 0x66, 0x66));
+
+        IEnumerable<string> dirs;
+        try
+        {
+            dirs = Directory.GetDirectories(_profilesDir)
+                .OrderBy(p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            ProfileStatusHint.Foreground = System.Windows.Media.Brushes.Firebrick;
+            ProfileStatusHint.Text = "Không đọc được thư mục profiles:\n" + ex.Message;
+            if (showMissingPathDialog)
+            {
+                WpfMsg.Show(ProfileStatusHint.Text, "ZaloMask Shell", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            return;
+        }
+
+        foreach (var dir in dirs)
         {
             var name = Path.GetFileName(dir);
             if (string.IsNullOrWhiteSpace(name)) continue;
@@ -89,7 +144,7 @@ public partial class MainWindow : Window
             {
                 if (File.Exists(metaPath))
                 {
-                    var json = File.ReadAllText(metaPath);
+                    var json = File.ReadAllText(metaPath, Encoding.UTF8);
                     display = ProfileMeta.ParseDisplayName(json);
                     mode = ProfileMeta.ParseLaunchMode(json);
                 }
@@ -99,6 +154,8 @@ public partial class MainWindow : Window
                 display = "(meta lỗi)";
             }
 
+            if (string.IsNullOrWhiteSpace(display) || display == "(meta không hợp lệ)") display = name;
+
             _rows.Add(new ProfileRow
             {
                 FolderName = name,
@@ -107,6 +164,8 @@ public partial class MainWindow : Window
             });
         }
 
-        Title = $"ZaloMask Shell — Preview (.NET)  •  {_rows.Count} profile(s)";
+        ProfileStatusHint.Text =
+            $"Được {_rows.Count} profile — {DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)}";
+        Title = $"ZaloMask Shell — Preview (.NET) • {_rows.Count} profile";
     }
 }
