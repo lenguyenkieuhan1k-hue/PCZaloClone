@@ -1,6 +1,6 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain, dialog, session, shell, net } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, session, shell } = require('electron')
 const { applyEarlyChromiumSwitches } = require('./chromium-win-bootstrap')
 applyEarlyChromiumSwitches(app)
 const crypto = require('crypto')
@@ -13,18 +13,20 @@ const cloneRuntime = require('./clone/clone-runtime')
 const { normalizeProxy, checkProxyViaCurl } = require('./proxy-live-check')
 
 // In dev: __dirname = repo/app/, so .. = repo root (config.json lives there).
-// In packaged: app.isPackaged = true; writable user data goes to userData,
-// config.json is bundled as extraResources → process.resourcesPath/config.json.
+// In packaged: defaults ship in resources/config.json (read-only in Program Files);
+// user overrides persist to userData/config.json so set-setting không ghi vào resources.
 const IS_PACKAGED = app.isPackaged
 const ROOT_DIR = IS_PACKAGED ? app.getPath('userData') : path.resolve(__dirname, '..')
-const CONFIG_PATH = IS_PACKAGED
+const BASE_CONFIG_PATH = IS_PACKAGED
   ? path.join(process.resourcesPath, 'config.json')
   : path.join(path.resolve(__dirname, '..'), 'config.json')
+const EDITABLE_CONFIG_PATH = IS_PACKAGED
+  ? path.join(ROOT_DIR, 'config.json')
+  : BASE_CONFIG_PATH
 const PROFILES_DIR = path.join(ROOT_DIR, 'profiles')
 const MAIN_HTML = path.join(__dirname, 'renderer', 'index-v2.html')
 const MAIN_PRELOAD = path.join(__dirname, 'preload.js')
 const APP_ICON = path.join(__dirname, 'renderer', 'assets', 'app-icon.png')
-const ZALO_WEB_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
 const RUNTIME_LOG = path.join(ROOT_DIR, 'app-runtime.log')
 const LICENSE_STATE_PATH = path.join(ROOT_DIR, 'license-state.json')
 const APP_VERSION = safeReadJson(path.join(__dirname, 'package.json'), {})?.version || '0.0.0'
@@ -61,8 +63,6 @@ function normalizeProfilePrivacy(input) {
     hideReceived: !!src.hideReceived,
   }
 }
-const cookieSaveTimers = new Map()
-const localStorageSeedCache = new Map()
 const deletingProfiles = new Set()
 let licenseHeartbeatTimer = null
 
@@ -179,6 +179,34 @@ function safeReadJson(filePath, fallback = null) {
 function writeJson(filePath, data) {
   ensureDir(path.dirname(filePath))
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8')
+}
+
+/** Chồng overlay lên bundled defaults (installer mới thêm khóa vẫn gộp được). */
+function mergeConfigLayers(baseLayer, overlayLayer) {
+  if (!overlayLayer || typeof overlayLayer !== 'object' || Array.isArray(overlayLayer)) {
+    return baseLayer && typeof baseLayer === 'object' ? { ...baseLayer } : {}
+  }
+  if (!baseLayer || typeof baseLayer !== 'object' || Array.isArray(baseLayer)) {
+    baseLayer = {}
+  }
+  const out = { ...baseLayer }
+  for (const k of Object.keys(overlayLayer)) {
+    const bv = overlayLayer[k]
+    const av = baseLayer[k]
+    if (
+      bv !== null &&
+      typeof bv === 'object' &&
+      !Array.isArray(bv) &&
+      av !== null &&
+      typeof av === 'object' &&
+      !Array.isArray(av)
+    ) {
+      out[k] = mergeConfigLayers(av, bv)
+    } else {
+      out[k] = bv
+    }
+  }
+  return out
 }
 
 function runPowerShellCommand(script, args = [], timeout = 10 * 60 * 1000) {
@@ -2056,11 +2084,15 @@ function bootLicenseRuntime() {
 }
 
 function readConfig() {
-  return safeReadJson(CONFIG_PATH, {}) || {}
+  const base = safeReadJson(BASE_CONFIG_PATH, {}) || {}
+  if (!IS_PACKAGED) return base
+  if (!fs.existsSync(EDITABLE_CONFIG_PATH)) return base
+  const overlay = safeReadJson(EDITABLE_CONFIG_PATH, {}) || {}
+  return mergeConfigLayers(base, overlay)
 }
 
 function writeConfig(next) {
-  writeJson(CONFIG_PATH, next || {})
+  writeJson(EDITABLE_CONFIG_PATH, next || {})
 }
 
 function profileDir(profileName) {
@@ -2556,46 +2588,6 @@ async function seedCookiesForSession(ses, cookies) {
       // Ignore malformed legacy cookie rows.
     }
   }
-}
-
-// Allow-list of cookie domains we transfer between machines. Anything outside
-// this list is dropped to keep export payloads small + avoid leaking unrelated
-// cookies (e.g. Google Analytics from .google.com that landed in this partition
-// because of OAuth redirects).
-const ZALO_COOKIE_DOMAIN_ALLOWLIST = ['zalo.me', 'zaloapp.com', 'zadn.vn']
-function isZaloCookieDomain(domain) {
-  const d = String(domain || '').toLowerCase()
-  return ZALO_COOKIE_DOMAIN_ALLOWLIST.some((suffix) => d === suffix || d.endsWith('.' + suffix) || d === '.' + suffix)
-}
-
-async function getZaloCookies(ses) {
-  const all = await ses.cookies.get({})
-  return all.filter((c) => isZaloCookieDomain(c.domain))
-}
-
-function scheduleCookieSave(profileName, ses) {
-  const old = cookieSaveTimers.get(profileName)
-  if (old) clearTimeout(old)
-
-  const timer = setTimeout(async () => {
-    cookieSaveTimers.delete(profileName)
-    const meta = loadProfileMeta(profileName)
-    if (!meta) return
-
-    try {
-      const cookies = await getZaloCookies(ses)
-      meta.webSession = meta.webSession || {}
-      meta.webSession.cookies = cookies
-      meta.webSession.cookieString = cookies.map((c) => `${c.name}=${c.value}`).join('; ')
-      meta.webSession.cookieCapturedAt = new Date().toISOString()
-      saveProfileMeta(profileName, meta)
-      mainWindow?.webContents.send('profile-updated', profileName)
-    } catch (_) {
-      // Best effort save.
-    }
-  }, 1200)
-
-  cookieSaveTimers.set(profileName, timer)
 }
 
 function normalizeImportedPayload(raw) {
@@ -3982,8 +3974,14 @@ app.whenReady().then(async () => {
     try { runDpapiSmokeTest() } catch (_) {}
   }, 2000)
   try {
-    autoUpdate.registerIpc({ configPath: CONFIG_PATH })
-    autoUpdate.startBackgroundChecks({ configPath: CONFIG_PATH })
+    autoUpdate.registerIpc({
+      configPath: BASE_CONFIG_PATH,
+      loadConfig: () => readConfig(),
+    })
+    autoUpdate.startBackgroundChecks({
+      configPath: BASE_CONFIG_PATH,
+      loadConfig: () => readConfig(),
+    })
   } catch (error) {
     logRuntime('auto-update-boot-error', { message: error?.message || String(error) })
   }

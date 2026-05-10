@@ -1,11 +1,10 @@
 {
   "name": "ZaloMask",
   "homepage": "https://zalomask.com/",
-  "version": "26.3.41",
+  "version": "26.3.43",
   "description": "ZaloMask - Multi-account & privacy toolkit cho Zalo PC",
   "engines": {
-    "node": "14.20.0",
-    "npm": "~6.13.4"
+    "node": ">=18.0.0"
   },
   "main": "main.v2.js",
   "author": {
@@ -19,8 +18,8 @@
     "assert:chromium-bootstrap": "node assert-chromium-bootstrap.js",
     "clean:zalo-runtime": "node ../scripts/clean-zalo-runtime-pack.js",
     "predist": "npm run assert:chromium-bootstrap && node ../scripts/patch-zalo-runtime-for-pack.js && npm run clean:zalo-runtime",
-    "dist": "electron-builder --win nsis --x64 --publish never",
-    "dist:publish": "npm run predist && electron-builder --win nsis --x64 --publish never"
+    "dist": "npm run predist && electron-builder --win nsis --x64 --publish never",
+    "dist:publish": "npm run dist"
   },
   "build": {
     "appId": "com.zalomask.app",
@@ -29,7 +28,6 @@
     "forceCodeSigning": false,
     "files": [
       "**/*",
-      "!legacy/**",
       "!profiles/**",
       "!dist/**",
       "!dist-pcfix/**",
@@ -104,9 +102,6 @@
       "installerHeaderIcon": "renderer/assets/app-icon.ico",
       "include": "installer.nsh"
     }
-  },
-  "dependencies": {
-    "sql.js": "^1.14.1"
   },
   "devDependencies": {
     "@electron/asar": "^3.2.10",
