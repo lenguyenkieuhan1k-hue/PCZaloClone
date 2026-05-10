@@ -7,7 +7,7 @@
   Chạy một lần bởi developer trước khi build.
   Yêu cầu Zalo PC đã cài trên máy (nếu chưa có sẽ tự cài).
   CI (GITHUB_ACTIONS): ưu tiên winget (VNGCorp.Zalo); máy dev: ZaloSetup.exe + /S.
-  Mirror CI (khuyến nghị): ZALOMASK_SUPABASE_ZALO_SETUP_URL — URL public Supabase Storage tới ZaloSetup.exe.
+  Mirror CI: ZALOMASK_SUPABASE_ZALO_SETUP_URL or ZALOMASK_ZALO_SETUP_URL mirror URL.
   Mirror khác: ZALOMASK_ZALO_SETUP_URL (bất kỳ host resolve được trên runner).
   Sau khi xong:  cd app && npx electron-builder --win nsis --x64 --publish never
 #>
@@ -18,26 +18,51 @@ $repoRoot = Split-Path $PSScriptRoot -Parent
 $destDir  = Join-Path $repoRoot 'app\zalo-runtime'
 
 function Get-ZaloInstallRoot {
+    param([switch]$ProbeProgramFiles)
     $candidates = @(
         (Join-Path $env:LOCALAPPDATA 'Programs\Zalo'),
+        (Join-Path $env:LOCALAPPDATA 'Zalo'),
         (Join-Path ${env:ProgramFiles(x86)} 'Zalo'),
-        (Join-Path $env:ProgramFiles 'Zalo')
+        (Join-Path $env:ProgramFiles 'Zalo'),
+        'C:\Zalo'
     )
     foreach ($dir in $candidates) {
         if ([string]::IsNullOrWhiteSpace($dir)) { continue }
         $exe = Join-Path $dir 'Zalo.exe'
         if (Test-Path -LiteralPath $exe) { return $dir }
     }
+
+    # Tim trong %LocalAppData%\Programs (Squirrel / layout khac chuan)
+    $programs = Join-Path $env:LOCALAPPDATA 'Programs'
+    if (Test-Path -LiteralPath $programs) {
+        try {
+            $hit = @(Get-ChildItem -LiteralPath $programs -Filter 'Zalo.exe' -File -Recurse -Depth 8 -ErrorAction SilentlyContinue) | Select-Object -First 1
+            if ($hit) { return $hit.Directory.FullName }
+        }
+        catch { }
+    }
+
+    if ($ProbeProgramFiles) {
+        foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+            if ([string]::IsNullOrWhiteSpace($base) -or -not (Test-Path -LiteralPath $base)) { continue }
+            try {
+                $hit = @(Get-ChildItem -LiteralPath $base -Filter 'Zalo.exe' -File -Recurse -Depth 8 -ErrorAction SilentlyContinue) | Select-Object -First 1
+                if ($hit) { return $hit.Directory.FullName }
+            }
+            catch { }
+        }
+    }
+
     return $null
 }
 
 function Sync-ZaloPathsFromDisk {
-    $found = Get-ZaloInstallRoot
+    param([switch]$ProbeProgramFiles)
+    $found = Get-ZaloInstallRoot -ProbeProgramFiles:$ProbeProgramFiles
     if ($found) {
         $script:zaloSrc = $found
         $script:zaloExeSrc = Join-Path $found 'Zalo.exe'
     }
-    # Đồng bộ alias phạm vi script (StrictMode: hàm không đọc được chỉ $script:)
     Set-Variable -Scope Script -Name zaloSrc -Value $script:zaloSrc
     Set-Variable -Scope Script -Name zaloExeSrc -Value $script:zaloExeSrc
 }
@@ -47,29 +72,14 @@ if (-not $script:zaloSrc) {
     $script:zaloSrc = Join-Path $env:LOCALAPPDATA 'Programs\Zalo'
 }
 $script:zaloExeSrc = Join-Path $script:zaloSrc 'Zalo.exe'
-# Alias để các hàm dưới (StrictMode) luôn thấy biến ở phạm vi script
 $zaloSrc = $script:zaloSrc
 $zaloExeSrc = $script:zaloExeSrc
 
-Write-Host ""
-Write-Host "=== ZaloMask — setup-zalo-runtime ===" -ForegroundColor Cyan
-Write-Host ""
+Write-Host ''
+Write-Host '=== ZaloMask - setup-zalo-runtime ===' -ForegroundColor Cyan
+Write-Host ''
 
-# ── 1. Kiểm tra / cài Zalo PC ────────────────────────────────────────
-
-function Wait-ForZaloExe {
-    param(
-        [Parameter(Mandatory)]
-        [string]$FullPath,
-        [int]$TimeoutSec = 240
-    )
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        if (Test-Path -LiteralPath $FullPath) { return $true }
-        Start-Sleep -Seconds 3
-    }
-    return (Test-Path -LiteralPath $FullPath)
-}
+# -- 1. Kiem tra / cai Zalo PC --
 
 function Download-ZaloSetupExe {
     param([string]$OutPath)
@@ -155,6 +165,21 @@ function Install-ZaloViaWinget {
     }
 }
 
+function Wait-ZaloExeAppearsOnDisk {
+    param([int]$TimeoutSec = 300)
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $iter = 0
+    while ((Get-Date) -lt $deadline) {
+        $iter++
+        $probePf = ($iter % 8 -eq 0)
+        Sync-ZaloPathsFromDisk -ProbeProgramFiles:$probePf
+        if ($script:zaloExeSrc -and (Test-Path -LiteralPath $script:zaloExeSrc)) { return $true }
+        Start-Sleep -Seconds 4
+    }
+    Sync-ZaloPathsFromDisk -ProbeProgramFiles
+    return ($script:zaloExeSrc -and (Test-Path -LiteralPath $script:zaloExeSrc))
+}
+
 Set-StrictMode -Version Latest
 
 if (-not (Test-Path -LiteralPath $zaloExeSrc)) {
@@ -162,21 +187,21 @@ if (-not (Test-Path -LiteralPath $zaloExeSrc)) {
 
     if ($env:GITHUB_ACTIONS -eq 'true') {
         Install-ZaloViaWinget
-        Sync-ZaloPathsFromDisk
-        if (-not (Wait-ForZaloExe -FullPath $zaloExeSrc -TimeoutSec 300)) {
+        Sync-ZaloPathsFromDisk -ProbeProgramFiles
+        if (-not (Wait-ZaloExeAppearsOnDisk -TimeoutSec 300)) {
             Write-Warning 'winget chua tao Zalo.exe dung han; thu ZaloSetup.exe...'
         }
     }
 
-    Sync-ZaloPathsFromDisk
+    Sync-ZaloPathsFromDisk -ProbeProgramFiles
     if (-not (Test-Path -LiteralPath $zaloExeSrc)) {
         $installer = Join-Path $env:TEMP 'ZaloSetup.exe'
         Download-ZaloSetupExe -OutPath $installer
         Write-Host '  Chay ZaloSetup /S ...' -ForegroundColor Green
         $setup = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru -NoNewWindow
         Write-Host ("  ZaloSetup ExitCode: " + $setup.ExitCode)
-        Sync-ZaloPathsFromDisk
-        if (-not (Wait-ForZaloExe -FullPath $zaloExeSrc -TimeoutSec 300)) {
+        Sync-ZaloPathsFromDisk -ProbeProgramFiles
+        if (-not (Wait-ZaloExeAppearsOnDisk -TimeoutSec 300)) {
             Write-Host "ERROR: Khong tim thay $zaloExeSrc sau khi cai." -ForegroundColor Red
             Write-Host 'Neu may ban co Zalo o vi tri khac, copy vao %LocalAppData%\Programs\Zalo hoac cai thu cong: https://zalo.me/pc' -ForegroundColor Yellow
             if (Test-Path -LiteralPath $zaloSrc) {
@@ -190,17 +215,26 @@ if (-not (Test-Path -LiteralPath $zaloExeSrc)) {
     Write-Host "  Zalo da cai tai: $zaloSrc" -ForegroundColor Green
 }
 
-Sync-ZaloPathsFromDisk
-Write-Host "Nguon: $zaloSrc"
+Sync-ZaloPathsFromDisk -ProbeProgramFiles
+Write-Host ('Nguon: ' + $zaloSrc)
 
-# ── 2. Xóa dest cũ ─────────────────────────────────────────────────
+if (-not (Test-Path -LiteralPath $zaloSrc)) {
+    Write-Host ('ERROR: Khong tim thay thu muc Zalo runtime: ' + $zaloSrc) -ForegroundColor Red
+    exit 1
+}
+if (-not (Test-Path -LiteralPath $zaloExeSrc)) {
+    Write-Host ('ERROR: Khong tim thay Zalo.exe: ' + $zaloExeSrc) -ForegroundColor Red
+    exit 1
+}
+
+# -- 2. Xoa dest cu --
 if (Test-Path $destDir) {
     Write-Host "Xoa zalo-runtime/ cu..."
     Remove-Item $destDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path $destDir -Force | Out-Null
 
-# ── 3. Copy ────────────────────────────────────────────────────────
+# -- 3. Copy --
 Write-Host "Copy $zaloSrc => $destDir ..."
 $items = @(Get-ChildItem -LiteralPath $zaloSrc -Force)
 $total = $items.Length
@@ -223,7 +257,7 @@ foreach ($item in $items) {
 }
 Write-Progress -Activity "Copy Zalo runtime" -Completed
 
-# ── 3b. Xóa bản backup / artifact patch (tránh installer ~1GB+ thừa) ──
+# -- 3b. Don rac backup app.asar (giam size installer) --
 Write-Host "Don rac backup app.asar + artifact patch (neu co)..."
 $suffixRx = '^app\.asar\.(backup|directbak|hotfixbak|testbak2?)$'
 Get-ChildItem -LiteralPath $destDir -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
@@ -238,7 +272,7 @@ Get-ChildItem -LiteralPath $destDir -Recurse -File -Force -ErrorAction SilentlyC
     Where-Object { $_.Name -eq '.asar-patch-done.txt' } |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 
-# ── 4. Xác nhận ────────────────────────────────────────────────────
+# -- 4. Xac nhan --
 $zaloExeDst = Join-Path $destDir 'Zalo.exe'
 if (-not (Test-Path $zaloExeDst)) {
     Write-Host "ERROR: Zalo.exe khong co trong $destDir" -ForegroundColor Red
