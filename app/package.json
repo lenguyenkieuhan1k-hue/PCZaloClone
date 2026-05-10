@@ -1,7 +1,7 @@
 {
   "name": "ZaloMask",
   "homepage": "https://zalomask.com/",
-  "version": "26.3.37",
+  "version": "26.3.41",
   "description": "ZaloMask - Multi-account & privacy toolkit cho Zalo PC",
   "engines": {
     "node": "14.20.0",
@@ -20,7 +20,7 @@
     "clean:zalo-runtime": "node ../scripts/clean-zalo-runtime-pack.js",
     "predist": "npm run assert:chromium-bootstrap && node ../scripts/patch-zalo-runtime-for-pack.js && npm run clean:zalo-runtime",
     "dist": "electron-builder --win nsis --x64 --publish never",
-    "dist:publish": "npm run predist && electron-builder --win nsis --x64 --publish always"
+    "dist:publish": "npm run predist && electron-builder --win nsis --x64 --publish never"
   },
   "build": {
     "appId": "com.zalomask.app",

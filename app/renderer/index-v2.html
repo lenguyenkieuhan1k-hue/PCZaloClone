@@ -42,7 +42,12 @@
 
   <section class="tab-panel active" id="tab-clone">
     <div class="list-toolbar">
-      <span id="listCount">Danh sách (0)</span>
+      <div class="toolbar-main">
+        <span id="listCount">Danh sách (0)</span>
+        <span id="bulkSelectionHint" class="bulk-hint" aria-live="polite"></span>
+        <button type="button" class="link-btn" id="btnBulkExportRows">Xuất đã chọn</button>
+        <button type="button" class="link-btn link-btn-danger" id="btnBulkDeleteRows">Xóa đã chọn</button>
+      </div>
       <div class="toolbar-right">
         <button class="link-btn" id="btnExport">Sao lưu</button>
         <span class="sep">|</span>
@@ -51,6 +56,9 @@
     </div>
 
     <div class="list-header">
+      <span class="col-pick" title="Chọn nhiều profile">
+        <input type="checkbox" id="chkBulkMaster" class="bulk-master-cb" aria-label="Chọn tất cả profile" />
+      </span>
       <span class="col-avatar">Ảnh</span>
       <span class="col-name">Tên Zalo</span>
       <span class="col-meta">Thông tin / Công cụ</span>
@@ -130,6 +138,16 @@
           </div>
           <label class="switch">
             <input type="checkbox" id="chkHideReceived" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row-info">
+            <span class="settings-row-label">📤 Sau khi xuất file .zmb thành công, xóa profile khỏi máy</span>
+            <span class="settings-row-sub">Mặc định <strong>bật</strong> — tắt nếu bạn luôn muốn giữ profile trên máy sau khi xuất file.</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="chkDeleteAfterExport" />
             <span class="switch-slider"></span>
           </label>
         </div>
@@ -291,6 +309,10 @@
           <button class="link-btn" id="backupClearAll">Bỏ chọn</button>
         </div>
         <div class="backup-list" id="backupList"></div>
+        <label class="backup-delete-after">
+          <input type="checkbox" id="chkBackupDeleteAfter" />
+          <span>Sau khi lưu file, xóa các profile đã chọn khỏi máy (đồng bộ với mục Cài đặt)</span>
+        </label>
         <p id="backupActionHint" class="settings-row-sub backup-action-hint hidden" aria-live="polite"></p>
       </div>
       <div class="modal-footer">

@@ -17,7 +17,7 @@
 
 const fs = require('fs')
 const path = require('path')
-const { app, session, BrowserWindow, ipcMain } = require('electron')
+const { app, session, ipcMain } = require('electron')
 
 const CLONE_ARG_PREFIX = '--appdata-id='
 const CLONE_ENV_DIR = '__zalomask_clone_env__'
@@ -647,6 +647,75 @@ function bootSessionSnapshotBridge() {
   } catch {}
 }
 
+function zalomaskForceExitFromTrayMenu() {
+  try {
+    app.exit(0)
+  } catch (_) {
+    try {
+      process.exit(0)
+    } catch (_) {}
+  }
+}
+
+/**
+ * Tray "Thoát" often calls app.quit() which Zalo can block via before-quit.
+ * Patch menu templates once so quit items always follow with app.exit(0).
+ * Scope: Windows clone only; only items that look like exit (label / role).
+ */
+function installTrayQuitMenuFollowThroughWin32() {
+  if (process.platform !== 'win32') return
+  try {
+    const { Menu } = require('electron')
+    if (!Menu || typeof Menu.buildFromTemplate !== 'function') return
+    if (Menu.buildFromTemplate.__zalomaskTrayQuitPatch) return
+    const original = Menu.buildFromTemplate.bind(Menu)
+
+    function isTrayQuitItem(entry) {
+      if (!entry || typeof entry !== 'object') return false
+      if (entry.type === 'separator') return false
+      if (entry.role === 'quit') return true
+      const label = String(entry.label || '').trim().toLowerCase()
+      if (!label) return false
+      if (label === 'thoát' || label === 'exit' || label === 'quit') return true
+      if (/^thoát\b/i.test(entry.label || '') && label.length < 40) return true
+      return false
+    }
+
+    function patchItems(items) {
+      if (!Array.isArray(items)) return items
+      return items.map((item) => {
+        if (!item || typeof item !== 'object') return item
+        if (item.type === 'separator') return item
+        const next = { ...item }
+        if (Array.isArray(next.submenu)) {
+          next.submenu = patchItems(next.submenu)
+        }
+        if (!isTrayQuitItem(next)) return next
+        const prev = typeof next.click === 'function' ? next.click : null
+        if (next.role === 'quit') {
+          try {
+            delete next.role
+          } catch (_) {}
+          // Electron MenuItem requires at least one of label, role, or type; Zalo may use { role: 'quit' } only.
+          if (!next.label && !next.type) next.label = 'Quit'
+        }
+        next.click = function zalomaskPatchedTrayQuit(menuItem, browserWindow, event) {
+          try {
+            if (prev) prev.call(this, menuItem, browserWindow, event)
+          } catch (_) {}
+          setImmediate(() => zalomaskForceExitFromTrayMenu())
+        }
+        return next
+      })
+    }
+
+    Menu.buildFromTemplate = function buildFromTemplatePatched(template) {
+      return original(patchItems(template))
+    }
+    Menu.buildFromTemplate.__zalomaskTrayQuitPatch = true
+  } catch (_) {}
+}
+
 function startCloneAccountObservers() {
   for (const targetSession of getTrackedSessions()) {
     ensureCloneSessionPreload(targetSession)
@@ -680,6 +749,8 @@ if (getCloneId()) {
   // that's why this runs synchronously at module load. The session/cookie
   // hydration still waits for app.ready.
   bootSessionSnapshotBridge()
+  // After Zalo builds the tray context menu, quit items get a guaranteed app.exit(0).
+  installTrayQuitMenuFollowThroughWin32()
 
   app.once('ready', async () => {
     await hydrateCloneAccountIfNeeded().catch(() => {})

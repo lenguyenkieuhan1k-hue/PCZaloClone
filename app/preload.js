@@ -13,8 +13,10 @@ contextBridge.exposeInMainWorld('api', {
   renameProfile: (profileName, displayName) => ipcRenderer.invoke('rename-profile', { profileName, displayName }),
   updateProxy: (profileName, proxy) => ipcRenderer.invoke('update-proxy', { profileName, proxy }),
   checkProxy: (proxy) => ipcRenderer.invoke('check-proxy', { proxy }),
-  exportProfile: (profileName) => ipcRenderer.invoke('export-profile', { profileName }),
-  exportProfiles: (profileNames) => ipcRenderer.invoke('export-profiles', { profileNames }),
+  exportProfile: (profileName, opts = {}) =>
+    ipcRenderer.invoke('export-profile', { profileName, deleteAfterExport: !!opts.deleteAfterExport }),
+  exportProfiles: (profileNames, opts = {}) =>
+    ipcRenderer.invoke('export-profiles', { profileNames, deleteAfterExport: !!opts.deleteAfterExport }),
   importProfile: () => ipcRenderer.invoke('import-profile'),
   createProfileShortcut: (profileName) => ipcRenderer.invoke('create-profile-shortcut', { profileName }),
   openProfilesFolder: () => ipcRenderer.invoke('open-profiles-folder'),

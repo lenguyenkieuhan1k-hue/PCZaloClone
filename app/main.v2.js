@@ -10,6 +10,7 @@ const path = require('path')
 const { spawnSync } = require('child_process')
 const autoUpdate = require('./auto-update')
 const cloneRuntime = require('./clone/clone-runtime')
+const { normalizeProxy, checkProxyViaCurl } = require('./proxy-live-check')
 
 // In dev: __dirname = repo/app/, so .. = repo root (config.json lives there).
 // In packaged: app.isPackaged = true; writable user data goes to userData,
@@ -62,7 +63,6 @@ function normalizeProfilePrivacy(input) {
 }
 const cookieSaveTimers = new Map()
 const localStorageSeedCache = new Map()
-const proxyCheckCache = new Map()
 const deletingProfiles = new Set()
 let licenseHeartbeatTimer = null
 
@@ -1220,9 +1220,14 @@ function verifyDesktopPackageManifest(manifest, extractedRoot) {
 }
 
 async function exportDesktopProfilesArchive(profileNames, options = {}) {
+  const deleteAfterExport = !!options.deleteAfterExport
   const names = [...new Set((profileNames || []).map((x) => String(x || '').trim()).filter(Boolean))]
   if (names.length === 0) return { ok: false, message: 'Chưa chọn profile để sao lưu' }
-  logRuntime('export-desktop-profiles-start', { profileNames: names, count: names.length })
+  logRuntime('export-desktop-profiles-start', {
+    profileNames: names,
+    count: names.length,
+    deleteAfterExport,
+  })
 
   const suggested = options.suggestedName || `ZaloMask_backup_${new Date().toISOString().slice(0, 10)}.zmb`
   const dialogTitle = options.dialogTitle || (names.length === 1 ? 'Xuất profile desktop' : 'Sao lưu nhiều profile desktop')
@@ -1305,15 +1310,40 @@ async function exportDesktopProfilesArchive(profileNames, options = {}) {
       profileNames: manifestProfiles.map((x) => x.profileName),
       profilesMissingCookieKey,
       exportElevated,
+      deleteAfterExport,
     })
-    return {
+
+    const exportedIds = manifestProfiles.map((x) => x.profileName).filter(Boolean)
+    let deletedProfiles = []
+    const profilesDeleteFailed = []
+    if (deleteAfterExport && exportedIds.length > 0) {
+      for (const pn of exportedIds) {
+        const dr = await purgeProfileFilesystemBlocking(pn)
+        if (dr.ok) {
+          deletedProfiles.push(pn)
+          mainWindow?.webContents.send('profile-updated', pn)
+        } else {
+          profilesDeleteFailed.push({ profileName: pn, message: dr.message || '' })
+        }
+      }
+      logRuntime('export-desktop-profiles-after-delete', {
+        deletedProfiles,
+        profilesDeleteFailed,
+      })
+    }
+
+    const out = {
       ok: true,
       filePath: rs.filePath,
       count: manifestProfiles.length,
       profileNames: manifestProfiles.map((x) => x.profileName),
       profilesMissingCookieKey,
       exportElevated,
+      deleteAfterExport,
     }
+    if (deletedProfiles.length) out.deletedProfiles = deletedProfiles
+    if (profilesDeleteFailed.length) out.profilesDeleteFailed = profilesDeleteFailed
+    return out
   } finally {
     try { fs.rmSync(tempRoot, { recursive: true, force: true }) } catch (_) {}
   }
@@ -1489,35 +1519,6 @@ async function importDesktopProfilesArchive(archivePath, opts = {}) {
 
     if (imported.length > 0) {
       const firstMeta = loadProfileMeta(imported[0].profileName)
-      if (firstMeta?.proxy?.enabled) {
-        const liveRs = checkProxyViaCurl(firstMeta.proxy, { bypassCache: false, requireZaloReachable: true })
-        if (!liveRs.ok) {
-          logRuntime('import-auto-launch-proxy-failed', {
-            profileName: imported[0].profileName,
-            reason: liveRs.message || 'proxy-unreachable',
-          })
-          return {
-            ok: true,
-            profileName: imported[0]?.profileName || '',
-            displayName: imported[0]?.displayName || '',
-            launchMode: 'pc',
-            count: imported.length,
-            imported,
-            restoreChecks,
-            verifyWarnings,
-            cookieKeyAppliedAll: restoreChecks.length > 0
-              && restoreChecks.every((c) => c.cookieKeyApplied === true || c.cookieKeyApplied === null),
-            cookieKeyAppliedAny: restoreChecks.some((c) => c.cookieKeyApplied === true),
-            autoLaunch: false,
-            message: `Profile đã nhập nhưng chưa mở vì proxy không khả dụng: ${liveRs.message || 'proxy-unreachable'}`,
-          }
-        }
-        logRuntime('import-auto-launch-proxy-live', {
-          profileName: imported[0].profileName,
-          ip: liveRs.ip || '',
-          cached: !!liveRs.cached,
-        })
-      }
       const patchRs = await ensurePcRuntimePatchReady('import-archive')
       if (!patchRs.ok) {
         logRuntime('import-auto-launch-patch-failed', { profileName: imported[0].profileName, message: patchRs.message })
@@ -1539,11 +1540,34 @@ async function importDesktopProfilesArchive(archivePath, opts = {}) {
           message: patchRs.message,
         }
       }
-      await cloneRuntime.launchPcProfile(imported[0].profileName, {
+      const launchRs = await cloneRuntime.launchPcProfile(imported[0].profileName, {
         meta: firstMeta,
         profileDir: profileDir(imported[0].profileName),
         logger: (event, info) => logRuntime(event, info),
       })
+      if (!launchRs?.ok) {
+        logRuntime('import-auto-launch-failed', {
+          profileName: imported[0].profileName,
+          message: launchRs?.message || 'unknown',
+        })
+        const cookieKeyAppliedAll = restoreChecks.length > 0
+          && restoreChecks.every((c) => c.cookieKeyApplied === true || c.cookieKeyApplied === null)
+        const cookieKeyAppliedAny = restoreChecks.some((c) => c.cookieKeyApplied === true)
+        return {
+          ok: true,
+          profileName: imported[0]?.profileName || '',
+          displayName: imported[0]?.displayName || '',
+          launchMode: 'pc',
+          count: imported.length,
+          imported,
+          restoreChecks,
+          verifyWarnings,
+          cookieKeyAppliedAll,
+          cookieKeyAppliedAny,
+          autoLaunch: false,
+          message: launchRs?.message || 'Không mở được Zalo sau nhập profile (kiểm tra proxy nếu đang bật).',
+        }
+      }
     }
 
     // Roll-up health flags so callers (UI, cloud-sync) can show a single
@@ -2000,9 +2024,13 @@ function bootLicenseRuntime() {
   }
   try {
     const cfg = readConfig()
+    const manifestUrl = String(cfg?.updates?.manifestUrl || '').trim()
+    if (manifestUrl) {
+      logRuntime('config-info', { kind: 'updates-manifest', manifestUrl })
+    }
     const owner = String(cfg?.github?.owner || '').trim()
     const repo = String(cfg?.github?.repo || '').trim()
-    if (!owner || !repo || /^REPLACE_/.test(owner) || /^REPLACE_/.test(repo)) {
+    if (!manifestUrl && (!owner || !repo || /^REPLACE_/.test(owner) || /^REPLACE_/.test(repo))) {
       logRuntime('config-warning', { kind: 'github-placeholder', owner, repo, message: 'config.json.github.owner/repo còn placeholder — auto-update sẽ không tìm được release.' })
     }
     if (!baseUrl || baseUrl === 'https://zalomask.com') {
@@ -2115,6 +2143,7 @@ function listAllProfiles() {
       profileName: name,
       displayName: meta.displayName || name,
       launchMode,
+      cloneId: String(meta.cloneId || cloneRuntime.cloneIdFor(name)).trim(),
       license_id: meta.license_id || '',  // Multi-key: license_id for partition isolation
       createdAt: meta.createdAt || null,
       updatedAt: meta.updatedAt || null,
@@ -2340,27 +2369,6 @@ function decodeMaybeJson(value, fallback) {
   }
 }
 
-function normalizeProxy(input) {
-  const raw = input && typeof input === 'object' ? input : {}
-  const protocol = String(raw.protocol || 'HTTP').toUpperCase()
-  const host = String(raw.host || '').trim()
-  const portNum = Number(raw.port)
-  const port = Number.isFinite(portNum) ? Math.trunc(portNum) : 0
-  const authEnabled = !!raw.authEnabled
-  const username = String(raw.username || '').trim()
-  const password = String(raw.password || '')
-  const enabled = !!raw.enabled && !!host && port > 0
-  return {
-    enabled,
-    protocol: ['HTTP', 'HTTPS', 'SOCKS5'].includes(protocol) ? protocol : 'HTTP',
-    host,
-    port,
-    authEnabled,
-    username,
-    password,
-  }
-}
-
 function buildProxyRules(proxy) {
   const p = normalizeProxy(proxy)
   if (!p.enabled) return ''
@@ -2480,104 +2488,6 @@ function normalizeFingerprint(input) {
     webglVendor,
     webglRenderer,
   }
-}
-
-function checkProxyViaCurl(proxy, options = {}) {
-  const p = normalizeProxy(proxy)
-  if (!p.enabled) return { ok: false, message: 'Proxy chưa đủ thông tin host/port' }
-  const bypassCache = !!options?.bypassCache
-  const requireZaloReachable = !!options?.requireZaloReachable
-
-  const cacheKey = [p.protocol, p.host, p.port, p.authEnabled ? p.username : '', p.authEnabled ? p.password : ''].join('|')
-  const cached = bypassCache ? null : proxyCheckCache.get(cacheKey)
-  if (cached && cached.ok && (Date.now() - cached.at) < 120000 && (!requireZaloReachable || cached.zaloOk)) {
-    return { ok: true, ip: cached.ip, cached: true }
-  }
-
-  const scheme = p.protocol === 'SOCKS5' ? 'socks5h' : (p.protocol === 'HTTPS' ? 'https' : 'http')
-  const proxyUrl = `${scheme}://${p.host}:${p.port}`
-  const args = [
-    '-sS',
-    '--max-time', '8',
-    '--connect-timeout', '5',
-    '--proxy', proxyUrl,
-    'https://api.ipify.org?format=json',
-  ]
-
-  if (p.authEnabled && p.username) {
-    args.splice(args.length - 1, 0, '--proxy-user', `${p.username}:${p.password || ''}`)
-  }
-
-  try {
-    const rs = spawnSync('curl.exe', args, { encoding: 'utf8', windowsHide: true, timeout: 10000 })
-    const status = typeof rs.status === 'number' ? rs.status : 1
-    const stdout = String(rs.stdout || '').trim()
-    const stderr = String(rs.stderr || '').trim()
-
-    if (status === 0) {
-      try {
-        const json = JSON.parse(stdout || '{}')
-        if (json.ip) {
-          let zaloOk = false
-          if (requireZaloReachable) {
-            const argsZalo = [
-              '-sS',
-              '--max-time', '10',
-              '--connect-timeout', '5',
-              '--proxy', proxyUrl,
-              '-o', 'NUL',
-              '-w', '%{http_code}',
-              'https://chat.zalo.me/',
-            ]
-            if (p.authEnabled && p.username) {
-              argsZalo.splice(argsZalo.length - 1, 0, '--proxy-user', `${p.username}:${p.password || ''}`)
-            }
-            const rsZalo = spawnSync('curl.exe', argsZalo, { encoding: 'utf8', windowsHide: true, timeout: 12000 })
-            const statusZalo = typeof rsZalo.status === 'number' ? rsZalo.status : 1
-            const codeText = String(rsZalo.stdout || '').trim()
-            const code = Number.parseInt(codeText, 10)
-            if (statusZalo !== 0 || !Number.isFinite(code) || code <= 0 || code >= 500) {
-              const errText = String(rsZalo.stderr || rsZalo.stdout || '').trim()
-              return {
-                ok: false,
-                message: errText
-                  ? `Proxy live nhưng không tới được chat.zalo.me: ${humanizeProxyError(errText)}`
-                  : 'Proxy live nhưng không tới được chat.zalo.me',
-              }
-            }
-            zaloOk = true
-          }
-
-          proxyCheckCache.set(cacheKey, { ok: true, ip: json.ip, at: Date.now(), zaloOk })
-          return { ok: true, ip: json.ip, zaloOk }
-        }
-      } catch (_) {}
-      return { ok: false, message: 'Proxy phản hồi nhưng dữ liệu không hợp lệ' }
-    }
-
-    const errText = stderr || stdout || 'Không kết nối được proxy'
-    return { ok: false, message: humanizeProxyError(errText) }
-  } catch (error) {
-    return { ok: false, message: humanizeProxyError(error?.message || 'Kiểm tra proxy thất bại') }
-  }
-}
-
-function humanizeProxyError(rawMessage) {
-  const text = String(rawMessage || '').trim()
-  const low = text.toLowerCase()
-  if (!text) return 'Không kết nối được proxy'
-  if (low.includes('timed out') || low.includes('timeout')) return 'Proxy timeout: không phản hồi kịp thời gian chờ'
-  if (low.includes('407')) return 'Proxy yêu cầu xác thực: sai username/password hoặc chưa cấp quyền'
-  if (low.includes('could not resolve') || low.includes('name or service not known') || low.includes('dns')) {
-    return 'Không phân giải được host proxy (DNS lỗi hoặc host sai)'
-  }
-  if (low.includes('refused')) return 'Proxy từ chối kết nối (connection refused)'
-  if (low.includes('failed to connect') || low.includes('no route to host')) {
-    return 'Không kết nối được tới server proxy (host/port có thể sai)'
-  }
-  if (low.includes('tunnel') && low.includes('failed')) return 'Lỗi tunnel qua proxy (thường do auth hoặc policy proxy)'
-  if (low.includes('ssl') || low.includes('tls') || low.includes('handshake')) return 'Proxy kết nối được nhưng lỗi SSL/TLS handshake'
-  return text.slice(0, 240)
 }
 
 function makeChecksumHex(payloadWithoutChecksum) {
@@ -2857,9 +2767,10 @@ function createMainWindow() {
   mainWindow.on('restore', () => nudgeMainWindowComposite({ resizeHack: true }))
 }
 
-ipcMain.handle('list-profiles', async () => {
-  return { ok: true, profiles: listAllProfiles() }
-})
+ipcMain.handle('list-profiles', async () => ({
+  ok: true,
+  profiles: listAllProfiles(),
+}))
 
 ipcMain.handle('get-profile-info', async (_event, payload) => {
   const profileName = String(payload?.profileName || '').trim()
@@ -2933,13 +2844,15 @@ ipcMain.handle('get-settings', async () => {
       hideTyping: !!s.hideTyping,
       hideSeen: !!s.hideSeen,
       hideReceived: !!s.hideReceived,
+      // Mặc định true (xuất xong có thể xóa máy gốc) — chỉ tắt khi đã chủ đích lưu false trong config.
+      deleteProfileAfterExport: s.deleteProfileAfterExport !== false,
     },
   }
 })
 
 ipcMain.handle('set-setting', async (_event, payload) => {
   const key = String(payload?.key || '').trim()
-  const allowed = new Set(['hideTyping', 'hideSeen', 'hideReceived'])
+  const allowed = new Set(['hideTyping', 'hideSeen', 'hideReceived', 'deleteProfileAfterExport'])
   if (!allowed.has(key)) return { ok: false, message: 'Khoá cài đặt không hợp lệ' }
   const cfg = readConfig()
   cfg.settingsV2 = cfg.settingsV2 || {}
@@ -3192,10 +3105,14 @@ ipcMain.handle('open-profile', async (_event, payload) => {
     const patchRs = await ensurePcRuntimePatchReady('open-profile')
     if (!patchRs.ok) return patchRs
 
-    // Fast path: if this profile is already running, skip proxy live-check and
-    // delegate to launchPcProfile() to focus the existing window.
+    const proxyCheck = validatePcRuntimeProxy(meta.proxy || {})
+    if (!proxyCheck.ok) return { ok: false, message: proxyCheck.message }
+    meta.proxy = proxyCheck.proxy
+
+    // Fast path: profile already running — launchPcProfile enforces live proxy check first.
     const runtimeState = await cloneRuntime.getPcProfileRuntimeState(profileName, {
       profileDir: profileDir(profileName),
+      cloneId: meta.cloneId,
     })
     if (runtimeState?.ok && runtimeState.running) {
       const runningRs = await cloneRuntime.launchPcProfile(profileName, {
@@ -3207,80 +3124,8 @@ ipcMain.handle('open-profile', async (_event, payload) => {
       return { ok: true, mode: 'pc', cloneId: runningRs.cloneId, pid: runningRs.pid, alreadyRunning: true }
     }
 
-    const proxyCheck = validatePcRuntimeProxy(meta.proxy || {})
-    if (!proxyCheck.ok) return { ok: false, message: proxyCheck.message }
-    meta.proxy = proxyCheck.proxy
-
-    // Soft proxy live-check: ngày trước nếu curl tới api.ipify/chat.zalo.me
-    // fail → block luôn lệnh mở. Thực tế nhiều mạng noisy hoặc proxy gateway
-    // chỉ chặn ipify nhưng vẫn cho Zalo, hoặc curl bị firewall đặc biệt — sẽ
-    // chặn nhầm. Bây giờ: live-check fail → HỎI user qua dialog 3 lựa chọn:
-    //   1. "Vẫn mở (giữ proxy)"      → launch with proxy, kệ live-check
-    //   2. "Mở không qua proxy"      → tạm vô hiệu proxy cho lần này
-    //   3. "Huỷ"                     → return error
-    // Nếu user chọn (2), KHÔNG ghi đè meta.proxy trên disk — chỉ override
-    // local copy `meta.proxy.enabled = false` cho launchPcProfile lần này.
-    let proxyOverrideForLaunch = null
-    if (meta.proxy?.enabled) {
-      const liveRs = checkProxyViaCurl(meta.proxy, { bypassCache: false, requireZaloReachable: true })
-      if (!liveRs.ok) {
-        const reason = liveRs.message || 'proxy-unreachable'
-        logRuntime('open-profile-proxy-failed', { profileName, reason })
-
-        let choice = 1 // default: cancel, in case dialog fails to spawn
-        try {
-          const focusWin = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null
-          const opts = {
-            type: 'warning',
-            buttons: [
-              'Vẫn mở (giữ proxy)',
-              'Mở không qua proxy',
-              'Huỷ',
-            ],
-            defaultId: 0,
-            cancelId: 2,
-            title: 'Proxy không khả dụng',
-            message: `Proxy đang bật nhưng kiểm tra fail: ${reason}`,
-            detail:
-              'Bạn có thể vẫn mở Zalo bằng proxy này (Zalo có thể tự retry / proxy chỉ chặn ipify), ' +
-              'hoặc tạm thời mở mà không qua proxy. Lựa chọn không qua proxy chỉ áp dụng cho lần mở này, ' +
-              'không ghi đè cấu hình profile.',
-            noLink: true,
-          }
-          choice = focusWin
-            ? dialog.showMessageBoxSync(focusWin, opts)
-            : dialog.showMessageBoxSync(opts)
-        } catch (dialogError) {
-          logRuntime('open-profile-proxy-dialog-failed', {
-            profileName,
-            message: dialogError?.message || String(dialogError),
-          })
-        }
-
-        if (choice === 2) {
-          return { ok: false, message: `Đã huỷ mở profile (proxy không khả dụng: ${reason})` }
-        }
-        if (choice === 1) {
-          proxyOverrideForLaunch = { ...meta.proxy, enabled: false }
-          logRuntime('open-profile-proxy-bypassed-by-user', { profileName, reason })
-        } else {
-          // choice === 0 hoặc bất kỳ giá trị bất ngờ nào khác → giữ proxy như cũ.
-          logRuntime('open-profile-proxy-forced-launch', { profileName, reason })
-        }
-      } else {
-        logRuntime('open-profile-proxy-live', {
-          profileName,
-          ip: liveRs.ip || '',
-          cached: !!liveRs.cached,
-        })
-      }
-    }
-
-    const launchMeta = proxyOverrideForLaunch
-      ? { ...meta, proxy: proxyOverrideForLaunch }
-      : meta
     const rs = await cloneRuntime.launchPcProfile(profileName, {
-      meta: launchMeta,
+      meta,
       profileDir: profileDir(profileName),
       logger: (event, info) => logRuntime(event, info),
     })
@@ -3290,7 +3135,6 @@ ipcMain.handle('open-profile', async (_event, payload) => {
       mode: 'pc',
       cloneId: rs.cloneId,
       pid: rs.pid,
-      proxyBypassed: !!proxyOverrideForLaunch,
       proxyFallback: rs.proxyFallback || null,
     }
   } catch (error) {
@@ -3359,8 +3203,78 @@ ipcMain.handle('set-profile-privacy', async (_event, payload) => {
 })
 
 ipcMain.handle('check-proxy', async (_event, payload) => {
-  return checkProxyViaCurl(payload?.proxy || payload || {})
+  return checkProxyViaCurl(payload?.proxy || payload || {}, {
+    bypassCache: true,
+    requireZaloReachable: true,
+  })
 })
+
+async function purgeProfileFilesystemBlocking(profileName) {
+  const key = String(profileName || '').trim()
+  if (!key) return { ok: false, message: 'Thiếu profileName' }
+  deletingProfiles.add(key)
+  const dir = profileDir(key)
+
+  try {
+    if (!fs.existsSync(dir)) {
+      deletingProfiles.delete(key)
+      return { ok: true, skipped: true }
+    }
+
+    try {
+      const killRs = await cloneRuntime.terminatePcProfile(key, {
+        profileDir: dir,
+        logger: (event, info) => logRuntime(event, info),
+      })
+      logRuntime('purge-profile-before-export-delete', { profileName: key, ...killRs })
+    } catch (err) {
+      logRuntime('purge-profile-before-export-delete-error', {
+        profileName: key,
+        message: err?.message || 'unknown',
+      })
+    }
+
+    let lastError = null
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      try {
+        await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 })
+        logRuntime('export-delete-profile-success', { profileName: key, attempt })
+        deletingProfiles.delete(key)
+        return { ok: true }
+      } catch (error) {
+        lastError = error
+        logRuntime('export-delete-profile-rm-retry', {
+          profileName: key,
+          attempt,
+          code: error?.code || 'unknown',
+          message: error?.message || 'unknown',
+        })
+        if (attempt === 1 || attempt === 3) {
+          try {
+            await cloneRuntime.terminatePcProfile(key, {
+              profileDir: dir,
+              logger: (event, info) => logRuntime(event, info),
+            })
+          } catch (_) {}
+        }
+        await new Promise((resolve) => setTimeout(resolve, Math.min(2000, attempt * 400)))
+      }
+    }
+
+    deletingProfiles.delete(key)
+    const code = String(lastError?.code || '').trim().toUpperCase()
+    const locked = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY'
+    return {
+      ok: false,
+      message: locked
+        ? 'Không xóa được profile vì file đang bị khóa. Đã lưu file sao lưu — đóng Zalo của profile và xóa thủ công nếu cần.'
+        : (lastError?.message || 'Không xóa được profile'),
+    }
+  } catch (_) {
+    deletingProfiles.delete(key)
+    return { ok: false, message: 'Lỗi xóa profile sau xuất' }
+  }
+}
 
 async function deleteProfileLocal(profileName) {
   if (!profileName) return
@@ -3486,19 +3400,23 @@ ipcMain.handle('rename-profile', async (_event, payload) => {
 
 ipcMain.handle('export-profile', async (_event, payload) => {
   const profileName = String(payload?.profileName || '').trim()
+  const deleteAfterExport = !!payload?.deleteAfterExport
   if (!profileName) return { ok: false, message: 'Thiếu profileName' }
   if (!loadProfileMeta(profileName)) return { ok: false, message: 'Không tìm thấy profile' }
   return exportDesktopProfilesArchive([profileName], {
     suggestedName: `ZaloMask_${profileName}_${new Date().toISOString().slice(0, 10)}.zmb`,
     dialogTitle: 'Xuất profile desktop',
+    deleteAfterExport,
   })
 })
 
 ipcMain.handle('export-profiles', async (_event, payload) => {
+  const deleteAfterExport = !!payload?.deleteAfterExport
   const inputNames = Array.isArray(payload?.profileNames) ? payload.profileNames : []
   const profileNames = [...new Set(inputNames.map((x) => String(x || '').trim()).filter(Boolean))]
   return exportDesktopProfilesArchive(profileNames, {
     dialogTitle: 'Sao lưu nhiều profile desktop',
+    deleteAfterExport,
   })
 })
 
@@ -3619,11 +3537,27 @@ ipcMain.handle('import-profile', async () => {
           message: patchRs.message,
         }
       }
-      await cloneRuntime.launchPcProfile(imported[0].profileName, {
+      const launchRs = await cloneRuntime.launchPcProfile(imported[0].profileName, {
         meta: firstMeta,
         profileDir: profileDir(imported[0].profileName),
         logger: (event, info) => logRuntime(event, info),
       })
+      if (!launchRs?.ok) {
+        logRuntime('import-json-auto-launch-failed', {
+          profileName: imported[0].profileName,
+          message: launchRs?.message || 'unknown',
+        })
+        return {
+          ok: true,
+          profileName: imported[0]?.profileName || '',
+          displayName: imported[0]?.displayName || '',
+          launchMode: 'pc',
+          count: imported.length,
+          imported,
+          autoLaunch: false,
+          message: launchRs?.message || 'Không mở được Zalo sau nhập (kiểm tra proxy nếu đang bật).',
+        }
+      }
     }
 
     return {
@@ -4077,9 +4011,17 @@ app.whenReady().then(async () => {
         })
         if (!rs?.ok) {
           logRuntime('startup-open-profile-failed', { profileName: startupOpenProfileName, message: rs?.message || 'unknown' })
-        } else {
-          logRuntime('startup-open-profile-ok', { profileName: startupOpenProfileName, pid: rs.pid })
+          if (meta.proxy?.enabled) {
+            try {
+              dialog.showErrorBox(
+                'ZaloMask — không mở được profile',
+                String(rs?.message || 'unknown'),
+              )
+            } catch (_) {}
+          }
+          return
         }
+        logRuntime('startup-open-profile-ok', { profileName: startupOpenProfileName, pid: rs.pid })
       } catch (error) {
         logRuntime('startup-open-profile-error', { profileName: startupOpenProfileName, message: error?.message || 'unknown' })
       }

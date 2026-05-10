@@ -129,8 +129,8 @@ PCZaloClone/
 | `deleteProfile(name)` | `delete-profile` | Xoá profile + partition data |
 | `updateProxy(name, proxy)` | `update-proxy` | Cập nhật proxy meta |
 | `checkProxy(proxy)` | `check-proxy` | Test proxy bằng curl |
-| `exportProfile(name)` | `export-profile` | Xuất 1 desktop package `.zlp` cho profile |
-| `exportProfiles(names)` | `export-profiles` | Sao lưu nhiều profile desktop ra `.zlp` |
+| `exportProfile(name, opts?)` | `export-profile` | Xuất package desktop (`.zmb`/…); `opts.deleteAfterExport` xóa profile sau khi lưu file |
+| `exportProfiles(names, opts?)` | `export-profiles` | Sao lưu nhiều profile; `opts.deleteAfterExport` tương tự |
 | `importProfile()` | `import-profile` | Nhập package `.zlp/.zip`, fallback JSON legacy |
 | `createProfileShortcut(name)` | `create-profile-shortcut` | Tạo shortcut Desktop mở trực tiếp profile |
 | `openProfilesFolder()` | `open-profiles-folder` | Mở thư mục `profiles/` |
@@ -509,8 +509,8 @@ PCZaloClone/
 | `deleteProfile(name)` | `delete-profile` | Xoá profile + partition data |
 | `updateProxy(name, proxy)` | `update-proxy` | Cập nhật proxy meta |
 | `checkProxy(proxy)` | `check-proxy` | Test proxy bằng curl |
-| `exportProfile(name)` | `export-profile` | Xuất 1 desktop package `.zlp` cho profile |
-| `exportProfiles(names)` | `export-profiles` | Sao lưu nhiều profile desktop ra `.zlp` |
+| `exportProfile(name, opts?)` | `export-profile` | Xuất package desktop (`.zmb`/…); `opts.deleteAfterExport` xóa profile sau khi lưu file |
+| `exportProfiles(names, opts?)` | `export-profiles` | Sao lưu nhiều profile; `opts.deleteAfterExport` tương tự |
 | `importProfile()` | `import-profile` | Nhập package `.zlp/.zip`, fallback JSON legacy |
 | `createProfileShortcut(name)` | `create-profile-shortcut` | Tạo shortcut Desktop mở trực tiếp profile |
 | `openProfilesFolder()` | `open-profiles-folder` | Mở thư mục `profiles/` |

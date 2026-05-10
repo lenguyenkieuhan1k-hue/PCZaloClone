@@ -1,20 +1,20 @@
-name: Release ZaloMask installer
+name: Build ZaloMask installer (manual)
 
-# Bấm tag dạng v26.3.2 trên main → workflow tự build NSIS installer + tạo
-# GitHub Release đính kèm. Auto-updater trong app sẽ phát hiện qua endpoint
-# /releases/latest tự động.
-#
-# Cần setup GitHub secrets:
-# - SIGNING_CERT_BASE64: Base64 của file .pfx (EV code signing cert)
-# - SIGNING_CERT_PASSWORD: Password của .pfx file
+# Không còn push tag → GitHub Release. Chỉ chạy tay (Actions → Run workflow).
+# Output: artifact installer trong run đó. Phát hành qua kênh của bạn.
+
+# Secrets tùy chọn:
+# - SIGNING_CERT_BASE64 / SIGNING_CERT_PASSWORD — ký mã
+# - ZALOMASK_SUPABASE_ZALO_SETUP_URL — khuyến nghị cho CI: URL public Supabase Storage tới ZaloSetup.exe
+#   (upload tay một lần: Dashboard → Storage → bucket public → object URL dạng
+#   https://<ref>.supabase.co/storage/v1/object/public/<bucket>/ZaloSetup.exe).
+# - ZALOMASK_ZALO_SETUP_URL — mirror bất kỳ (CDN/GitHub Releases) nếu không dùng Supabase
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
 
 permissions:
-  contents: write   # cần để workflow push assets vào release
+  contents: read
 
 jobs:
   build-windows:
@@ -35,10 +35,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # app/zalo-runtime/ không commit (gitignore). Không chạy bước này → installer thiếu Zalo.exe, máy khách báo "Runtime bundle chưa có".
       - name: Bundle Zalo PC runtime into app/zalo-runtime (CI)
         working-directory: ${{ github.workspace }}
         shell: powershell
+        env:
+          ZALOMASK_SUPABASE_ZALO_SETUP_URL: ${{ secrets.ZALOMASK_SUPABASE_ZALO_SETUP_URL }}
+          ZALOMASK_ZALO_SETUP_URL: ${{ secrets.ZALOMASK_ZALO_SETUP_URL }}
         run: |
           Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
           & "$env:GITHUB_WORKSPACE\scripts\setup-zalo-runtime.ps1"
@@ -50,69 +52,42 @@ jobs:
       - name: Install electron-builder
         run: npm install --no-save electron-builder@^26.8.1
 
-      - name: Pre-patch Zalo runtime (Program Files read-only OK at install)
+      - name: Pre-patch Zalo runtime (pack)
         run: node ../scripts/patch-zalo-runtime-for-pack.js
 
       - name: Strip Zalo runtime junk (smaller NSIS)
         run: node ../scripts/clean-zalo-runtime-pack.js
 
       - name: Setup code signing certificate (if available)
-        if: env.SIGNING_CERT_BASE64 != ''
+        if: ${{ secrets.SIGNING_CERT_BASE64 != '' }}
         env:
           SIGNING_CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
           SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
         shell: powershell
         run: |
-          # Decode cert from base64 and save as .pfx
           $certBase64 = $env:SIGNING_CERT_BASE64
           $certPath = "${{ runner.temp }}\signing-cert.pfx"
           [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
-          
-          # Set env for electron-builder
           echo "CSC_LINK=$certPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           echo "CSC_KEY_PASSWORD=${{ secrets.SIGNING_CERT_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Build NSIS installer
+      - name: Build NSIS installer (--publish never)
         env:
-          # Auto-discovery disabled if cert not provided (empty secret = not set)
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.SIGNING_CERT_BASE64 != '' && 'false' || 'false' }}
-          # Pass GH token để electron-builder publish lên Release sẵn có.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          SIGNING_CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
         run: |
           if ($env:SIGNING_CERT_BASE64) {
-            Write-Host "Building with code signing enabled..."
-            npx electron-builder --win nsis --x64 --publish always
+            Write-Host "Building with certificate from secrets..."
           } else {
-            Write-Host "Building WITHOUT code signing (set SIGNING_CERT_BASE64 secret to enable)..."
-            npx electron-builder --win nsis --x64 --publish always
+            Write-Host "Building without signing secret..."
           }
+          npx electron-builder --win nsis --x64 --publish never
         shell: powershell
 
-      - name: Upload installer as workflow artifact (debug)
+      - name: Upload installer artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: installer
           path: app/dist/*.exe
           if-no-files-found: warn
-
-      - name: Create release notes artifact
-        if: success()
-        run: |
-          # Extract tag name and create notes
-          $tag = "${{ github.ref }}" -replace "refs/tags/", ""
-          @{
-            tag = $tag
-            version = $tag -replace "^v", ""
-            builtAt = (Get-Date -Format "o")
-            artifact = (Get-ChildItem "dist/*.exe" | Select-Object -First 1).Name
-          } | ConvertTo-Json | Out-File -FilePath "dist/release-info.json"
-        shell: powershell
-
-      - name: Upload release info artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-info
-          path: app/dist/release-info.json
-

@@ -162,10 +162,33 @@ select {
 .list-toolbar {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 10px;
   padding: 10px 18px 6px;
   font-size: 13px;
   font-weight: 600;
+}
+
+.toolbar-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  min-width: 0;
+}
+
+.bulk-hint {
+  font-size: 11px;
+  font-weight: 600;
+  color: #667;
+}
+
+.link-btn-danger {
+  color: #c11f2b;
+}
+
+.link-btn-danger:hover {
+  color: #8f0712;
 }
 
 .toolbar-right { display: flex; gap: 6px; align-items: center; }
@@ -183,7 +206,7 @@ select {
 
 .list-header {
   display: grid;
-  grid-template-columns: 56px 1fr 270px;
+  grid-template-columns: 36px 56px minmax(0, 1fr) minmax(220px, 320px);
   gap: 8px;
   padding: 6px 18px;
   background: #fafafa;
@@ -191,6 +214,18 @@ select {
   border-bottom: 1px solid #f0f0f0;
   font-size: 12px;
   color: #888;
+}
+
+.col-pick {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bulk-master-cb {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
 }
 
 .account-list { flex: 1; overflow-y: auto; }
@@ -206,7 +241,7 @@ select {
 
 .account-row {
   display: grid;
-  grid-template-columns: 56px 1fr 270px;
+  grid-template-columns: 36px 56px minmax(0, 1fr) minmax(220px, 320px);
   gap: 8px;
   align-items: center;
   padding: 10px 18px;
@@ -231,7 +266,19 @@ select {
 .acc-name { font-size: 14px; font-weight: 600; color: #111; }
 .acc-meta { font-size: 11px; color: #888; margin-top: 2px; }
 
-.acc-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.acc-pick {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.acc-pick input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.acc-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
 
 .acc-btn,
 .btn-outline,
@@ -609,6 +656,23 @@ select {
 }
 .backup-action-hint.is-error {
   color: #b42318;
+}
+
+.backup-delete-after {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 12px;
+  padding: 10px 0 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.09);
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(0, 0, 0, 0.72);
+}
+
+.backup-delete-after input {
+  flex-shrink: 0;
+  margin-top: 3px;
 }
 
 /* Toasts — luôn nổi trên modal (đặt overlay z-index cao ~9999) */

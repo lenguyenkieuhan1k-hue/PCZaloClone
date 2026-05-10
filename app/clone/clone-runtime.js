@@ -19,6 +19,7 @@ const { app, dialog } = require('electron')
 const { spawn, spawnSync } = require('child_process')
 const { startProxyBridge: startProxyBridgeNormal } = require('../proxy-bridge')
 const { startProxyBridge: startProxyBridgeVerbose } = require('../proxy-bridge-verbose')
+const { normalizeProxy, checkProxyViaCurl } = require('../proxy-live-check')
 
 const RUNTIME_DIR_NAME = 'zalo-runtime'
 const PATCH_STAMP_FILENAME = '.zalomask-patched'
@@ -81,6 +82,10 @@ async function wipeUserRuntimeDest(dst, logger = () => {}) {
 
   for (let attempt = 1; attempt <= 4; attempt++) {
     try {
+      if (attempt >= 2) {
+        terminateZaloProcessesUsingRuntimeDir(dst, logger)
+        await sleep(650)
+      }
       fs.rmSync(dst, { recursive: true, force: true })
       return true
     } catch (e) {
@@ -143,7 +148,57 @@ function userRuntimeCopyLooksComplete(dst) {
   }
 }
 
+/**
+ * Dừng Zalo.exe đang chạy trực tiếp dưới `runtimeDir` (bản copy ở LocalAppData)
+ * để nhả khóa file trước khi xóa/robocopy lại — tránh EBUSY khi bump PATCH_VERSION.
+ */
+function terminateZaloProcessesUsingRuntimeDir(runtimeDir, logger = () => {}) {
+  if (process.platform !== 'win32' || !runtimeDir) return 0
+  let base
+  try {
+    base = path.resolve(runtimeDir)
+  } catch (_) {
+    return 0
+  }
+  const safe = base.replace(/'/g, "''")
+  const script =
+    `$base = '${safe}'; ` +
+    '$n = 0; ' +
+    'Get-CimInstance Win32_Process -Filter "Name = \'Zalo.exe\'" -ErrorAction SilentlyContinue | ForEach-Object { ' +
+    '  $ex = [string]$_.ExecutablePath; ' +
+    '  if ($ex -and $ex.StartsWith($base, [System.StringComparison]::OrdinalIgnoreCase)) { ' +
+    '    try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $n++ } catch {} ' +
+    '  } ' +
+    '}; ' +
+    '[Console]::Out.Write([string]$n)'
+
+  try {
+    const rs = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 60000,
+    })
+    const n = Number.parseInt(String(rs.stdout || '').trim(), 10) || 0
+    if (n > 0) {
+      try {
+        logger('pc-runtime-terminated-zalo-holding-runtime', { killed: n, runtimeDir: base })
+      } catch (_) {}
+    }
+    return n
+  } catch (e) {
+    try {
+      logger('pc-runtime-terminated-zalo-error', { message: e?.message || String(e) })
+    } catch (_) {}
+    return 0
+  }
+}
+
 async function copyRuntimeTreeAsync(src, dst, logger) {
+  // Đích: bản clone cũ có thể còn Zalo.exe. Nguồn: Zalo Desktop thường mở mmap app.asar — copy/robocopy dễ lỗi nếu không nhả máy chủ trước.
+  terminateZaloProcessesUsingRuntimeDir(dst, logger)
+  terminateZaloProcessesUsingRuntimeDir(src, logger)
+  await new Promise((resolve) => setTimeout(resolve, 950))
+
   if (fs.existsSync(dst)) {
     const wiped = await wipeUserRuntimeDest(dst, logger)
     if (!wiped) {
@@ -206,6 +261,9 @@ async function copyRuntimeTreeAsync(src, dst, logger) {
   if (process.platform === 'win32') {
     try {
       if (fs.existsSync(dst)) {
+        terminateZaloProcessesUsingRuntimeDir(dst, logger)
+        terminateZaloProcessesUsingRuntimeDir(src, logger)
+        await new Promise((resolve) => setTimeout(resolve, 950))
         const w = await wipeUserRuntimeDest(dst, logger)
         if (!w) {
           throw new Error('Không dọn được thư mục đích sau copy lỗi (EBUSY). Tắt Zalo.exe rồi thử lại.')
@@ -437,11 +495,10 @@ function resolveZaloRuntimeDir() {
     // Dev: app/zalo-runtime/ next to clone/
     candidates.push(path.join(__dirname, '..', RUNTIME_DIR_NAME))
   }
-  // Production: extraResources lands under resourcesPath
+  // Production: extraResources → resources/zalo-runtime/
   if (process.resourcesPath) {
     candidates.push(path.join(process.resourcesPath, RUNTIME_DIR_NAME))
   }
-  // Belt-and-suspenders: also check beside app dir (for user-configured custom location)
   candidates.push(path.join(path.dirname(app.getPath('exe') || ''), RUNTIME_DIR_NAME))
 
   for (const dir of candidates) {
@@ -767,9 +824,60 @@ function cloneIdFor(profileName) {
   return crypto.createHash('sha1').update(String(profileName)).digest('hex').slice(0, 16)
 }
 
+const PROXY_LAUNCH_STAMP = '.zalomask-last-proxy.json'
+
+function proxyConfigHash(proxy) {
+  const p = normalizeProxy(proxy || {})
+  const payload = JSON.stringify({
+    enabled: p.enabled,
+    protocol: p.protocol,
+    host: p.host,
+    port: p.port,
+    authEnabled: p.authEnabled,
+    username: p.username,
+    password: p.password,
+  })
+  return crypto.createHash('sha256').update(payload, 'utf8').digest('hex')
+}
+
+function readProxyLaunchStamp(profileRoot) {
+  try {
+    const f = path.join(profileRoot, PROXY_LAUNCH_STAMP)
+    if (!fs.existsSync(f)) return null
+    const j = JSON.parse(fs.readFileSync(f, 'utf8'))
+    return typeof j?.hash === 'string' ? j : null
+  } catch (_) {
+    return null
+  }
+}
+
+function writeProxyLaunchStamp(profileRoot, proxy) {
+  try {
+    const p = normalizeProxy(proxy || {})
+    const stampPath = path.join(profileRoot, PROXY_LAUNCH_STAMP)
+    if (!p.enabled) {
+      try {
+        if (fs.existsSync(stampPath)) fs.unlinkSync(stampPath)
+      } catch (_) {}
+      return
+    }
+    fs.writeFileSync(
+      stampPath,
+      JSON.stringify({ hash: proxyConfigHash(proxy), updatedAt: new Date().toISOString() }),
+      'utf8',
+    )
+  } catch (_) {}
+}
+
+function proxyLaunchStampMatches(profileRoot, proxy) {
+  const stamp = readProxyLaunchStamp(profileRoot)
+  if (!stamp) return false
+  return stamp.hash === proxyConfigHash(proxy)
+}
+
 function buildPcProxyArg(proxy) {
-  const src = proxy && typeof proxy === 'object' ? proxy : {}
-  if (!src.enabled || !src.host || !src.port) return { ok: true, value: '--no-proxy-server', mode: 'direct' }
+  const src = normalizeProxy(proxy && typeof proxy === 'object' ? proxy : {})
+  if (!src.enabled) return { ok: true, value: '--no-proxy-server', mode: 'direct' }
 
   const protocol = String(src.protocol || 'HTTP').toUpperCase()
   const isSocks5 = protocol === 'SOCKS5'
@@ -821,6 +929,24 @@ function getProcessExecutablePath(pid) {
     '-ExecutionPolicy', 'Bypass',
     '-Command',
     '$p = Get-CimInstance Win32_Process -Filter "ProcessId = ' + Number(pid) + '" -ErrorAction SilentlyContinue; if ($p) { [Console]::Out.Write($p.ExecutablePath) }',
+  ], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 15000,
+  })
+  if (rs.error) return ''
+  return String(rs.stdout || '').trim()
+}
+
+/** Used to confirm the PID is this profile's clone, not reused / official Zalo. */
+function getProcessCommandLine(pid) {
+  const safePid = Number(pid)
+  if (!Number.isInteger(safePid) || safePid <= 0) return ''
+  const rs = spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-Command',
+    '$p = Get-CimInstance Win32_Process -Filter "ProcessId = ' + safePid + '" -ErrorAction SilentlyContinue; if ($p -and $null -ne $p.CommandLine) { [Console]::Out.Write([string]$p.CommandLine) }',
   ], {
     encoding: 'utf8',
     windowsHide: true,
@@ -932,6 +1058,7 @@ function requestFocusForPid(pid, logger = () => {}, context = {}) {
     'using System.Collections.Generic;' + "\n" +
     'public class WinApi {' + "\n" +
     '  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);' + "\n" +
+    '  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }' + "\n" +
     '  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lParam);' + "\n" +
     '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);' + "\n" +
     '  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);' + "\n" +
@@ -940,16 +1067,25 @@ function requestFocusForPid(pid, logger = () => {}, context = {}) {
     '  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);' + "\n" +
     '  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);' + "\n" +
     '  [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hWnd);' + "\n" +
+    '  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);' + "\n" +
+    '  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);' + "\n" +
+    '  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);' + "\n" +
     '  public static List<IntPtr> FindWindows(HashSet<uint> pids) {' + "\n" +
-    '    List<IntPtr> result = new List<IntPtr>();' + "\n" +
+    '    var raw = new List<System.Tuple<IntPtr,long>>();' + "\n" +
     '    EnumWindows((h, l) => {' + "\n" +
-    '      uint procId = 0;' + "\n" +
-    '      GetWindowThreadProcessId(h, out procId);' + "\n" +
-    '      if (pids.Contains(procId) && GetWindowTextLength(h) > 0 && GetParent(h) == IntPtr.Zero) {' + "\n" +
-    '        result.Add(h);' + "\n" +
-    '      }' + "\n" +
+    '      if (GetParent(h) != IntPtr.Zero) return true;' + "\n" +
+    '      uint procId = 0; GetWindowThreadProcessId(h, out procId);' + "\n" +
+    '      if (!pids.Contains(procId)) return true;' + "\n" +
+    '      int tl = GetWindowTextLength(h);' + "\n" +
+    '      RECT r; long area = 0; int w = 0, ht = 0;' + "\n" +
+    '      if (GetWindowRect(h, out r)) { w = (int)(r.Right - r.Left); ht = (int)(r.Bottom - r.Top); area = (long)w * ht; }' + "\n" +
+    '      bool pick = (tl > 0) || IsIconic(h) || (w >= 120 && ht >= 80) || (IsWindowVisible(h) && area >= 8000);' + "\n" +
+    '      if (pick) raw.Add(System.Tuple.Create(h, area > 0 ? area : 1L));' + "\n" +
     '      return true;' + "\n" +
     '    }, IntPtr.Zero);' + "\n" +
+    '    raw.Sort((a,b) => b.Item2.CompareTo(a.Item2));' + "\n" +
+    '    var result = new List<IntPtr>();' + "\n" +
+    '    foreach (var t in raw) result.Add(t.Item1);' + "\n" +
     '    return result;' + "\n" +
     '  }' + "\n" +
     '}' + "\n" +
@@ -1053,6 +1189,12 @@ async function getPcProfileRuntimeState(profileName, opts = {}) {
     return { ok: true, running: false, pid: 0, reason: 'pid-missing' }
   }
 
+  const cloneId =
+    String(opts.cloneId || '').trim() ||
+    (opts.meta && String(opts.meta.cloneId || '').trim()) ||
+    cloneIdFor(profileName)
+  const wantArg = `--appdata-id=${cloneId}`
+
   const runningExe = getProcessExecutablePath(pidInfo.pid)
   if (!runningExe) {
     try { if (fs.existsSync(pidInfo.pidFilePath)) fs.unlinkSync(pidInfo.pidFilePath) } catch {}
@@ -1062,12 +1204,8 @@ async function getPcProfileRuntimeState(profileName, opts = {}) {
   const runningResolved = path.resolve(runningExe).toLowerCase()
   const baseName = path.basename(runningResolved)
   const isZaloExe = baseName === 'zalo.exe'
-  const underPicked =
-    !!(runtimeRootResolved && runningResolved.startsWith(runtimeRootResolved + sep))
-  const underUserCopy =
-    !!(userRuntimeResolved && runningResolved.startsWith(userRuntimeResolved + sep))
-  const insideRuntime = underPicked || underUserCopy
   if (!isZaloExe) {
+    try { if (fs.existsSync(pidInfo.pidFilePath)) fs.unlinkSync(pidInfo.pidFilePath) } catch {}
     return {
       ok: false,
       running: false,
@@ -1076,7 +1214,62 @@ async function getPcProfileRuntimeState(profileName, opts = {}) {
       executablePath: runningExe,
     }
   }
+
+  // Primary signal on Windows: clone always passes --appdata-id (avoids stale pid.txt
+  // reused by standalone Zalo, and fixes "running" when runtime paths weren't resolved).
+  if (process.platform === 'win32') {
+    const cmdLine = getProcessCommandLine(pidInfo.pid)
+    if (cmdLine) {
+      if (!cmdLine.toLowerCase().includes(wantArg.toLowerCase())) {
+        try { if (fs.existsSync(pidInfo.pidFilePath)) fs.unlinkSync(pidInfo.pidFilePath) } catch {}
+        return {
+          ok: true,
+          running: false,
+          pid: pidInfo.pid,
+          reason: 'pid-not-this-clone',
+          executablePath: runningExe,
+        }
+      }
+      return { ok: true, running: true, pid: pidInfo.pid, reason: 'running', executablePath: runningExe }
+    }
+
+    const underPicked =
+      !!(runtimeRootResolved && runningResolved.startsWith(runtimeRootResolved + sep))
+    const underUserCopy =
+      !!(userRuntimeResolved && runningResolved.startsWith(userRuntimeResolved + sep))
+    const insideRuntime = underPicked || underUserCopy
+    const haveRuntimePaths = !!(runtimeRootResolved || userRuntimeResolved)
+
+    if (!haveRuntimePaths) {
+      try { if (fs.existsSync(pidInfo.pidFilePath)) fs.unlinkSync(pidInfo.pidFilePath) } catch {}
+      return {
+        ok: true,
+        running: false,
+        pid: pidInfo.pid,
+        reason: 'commandline-unavailable-and-runtime-unknown',
+        executablePath: runningExe,
+      }
+    }
+    if (!insideRuntime) {
+      try { if (fs.existsSync(pidInfo.pidFilePath)) fs.unlinkSync(pidInfo.pidFilePath) } catch {}
+      return {
+        ok: false,
+        running: false,
+        pid: pidInfo.pid,
+        reason: 'pid-reused-different-exe',
+        executablePath: runningExe,
+      }
+    }
+    return { ok: true, running: true, pid: pidInfo.pid, reason: 'running', executablePath: runningExe }
+  }
+
+  const underPicked =
+    !!(runtimeRootResolved && runningResolved.startsWith(runtimeRootResolved + sep))
+  const underUserCopy =
+    !!(userRuntimeResolved && runningResolved.startsWith(userRuntimeResolved + sep))
+  const insideRuntime = underPicked || underUserCopy
   if ((runtimeRootResolved || userRuntimeResolved) && !insideRuntime) {
+    try { if (fs.existsSync(pidInfo.pidFilePath)) fs.unlinkSync(pidInfo.pidFilePath) } catch {}
     return {
       ok: false,
       running: false,
@@ -1209,13 +1402,97 @@ async function launchPcProfile(profileName, opts = {}) {
     logger('pc-profile-arg-appdata-id', { profileName, cloneId, arg: `--appdata-id=${cloneId}` })
   } catch (_) {}
 
+  const proxyPreflight = normalizeProxy(meta.proxy || {})
+  if (proxyPreflight.enabled) {
+    const liveRs = checkProxyViaCurl(proxyPreflight, { bypassCache: true, requireZaloReachable: true })
+    if (!liveRs.ok) {
+      try {
+        logger('pc-profile-proxy-live-check-failed', { profileName, message: liveRs.message || '' })
+      } catch (_) {}
+      return {
+        ok: false,
+        message:
+          'Profile bật proxy: bắt buộc kết nối qua proxy và tới được chat.zalo.me trước khi mở Zalo. ' +
+          (liveRs.message || 'Kiểm tra thất bại'),
+      }
+    }
+  }
+
   const desktopEnv = resolveProfileDesktopEnv(profileName, opts)
-  const runtimeState = await getPcProfileRuntimeState(profileName, opts)
+  let runtimeState = await getPcProfileRuntimeState(profileName, opts)
   if (!runtimeState.ok) {
     return { ok: false, message: `PID của profile đang trỏ tới process khác: ${runtimeState.executablePath || runtimeState.reason}` }
   }
+
+  // Chromium không đổi proxy nóng: nếu đã bật proxy mà process đang chạy không
+  // khớp cấu hình lần khởi động có --proxy-server (đổi proxy / bản cũ chưa có stamp),
+  // bắt buộc dừng rồi mở lại — tránh nick vẫn đi mạng trực tiếp hoặc proxy cũ.
+  if (runtimeState.running && proxyPreflight.enabled) {
+    if (!proxyLaunchStampMatches(desktopEnv.profileRoot, meta.proxy || {})) {
+      try {
+        logger('pc-profile-proxy-stale-restart', {
+          profileName,
+          reason: 'stamp-mismatch-or-missing',
+        })
+      } catch (_) {}
+      await terminatePcProfile(profileName, opts)
+      runtimeState = await getPcProfileRuntimeState(profileName, opts)
+      if (runtimeState.running) {
+        return {
+          ok: false,
+          message:
+            'Không thể khởi động lại Zalo với proxy (tiến trình cũ vẫn còn). Đóng cửa sổ/tray Zalo của profile này rồi bấm Mở lại.',
+        }
+      }
+    }
+  }
+
   if (runtimeState.running) {
     requestFocusForPid(runtimeState.pid, logger, { profileName, source: 'already-running' })
+    // Second instance with same --appdata-id typically routes to the single
+    // instance and raises the window (tray-only / untitled Chromium leaves
+    // focus-only scan with nothing to restore).
+    try {
+      const privacy = meta.privacy || {}
+      const tempDir = path.join(desktopEnv.localPath, 'Temp')
+      ensureDir(tempDir)
+      const nudgeEnv = {
+        ...process.env,
+        ZALOMASK_CLONE_ID: cloneId,
+        ZALOMASK_PROFILE_NAME: profileName,
+        ZALOMASK_HIDE_TYPING: privacy.hideTyping ? '1' : '0',
+        ZALOMASK_HIDE_SEEN: privacy.hideSeen ? '1' : '0',
+        ZALOMASK_HIDE_RECEIVED: privacy.hideReceived ? '1' : '0',
+        USERPROFILE: desktopEnv.profileRoot,
+        APPDATA: desktopEnv.roamingPath,
+        LOCALAPPDATA: desktopEnv.localPath,
+        TEMP: tempDir,
+        TMP: tempDir,
+      }
+      try {
+        const homeAbs = path.resolve(desktopEnv.profileRoot)
+        const hm = /^([A-Za-z]:)(.*)$/.exec(homeAbs.replace(/\//g, '\\'))
+        if (hm) {
+          nudgeEnv.HOMEDRIVE = hm[1]
+          nudgeEnv.HOMEPATH = hm[2] && hm[2].length ? hm[2] : '\\'
+        }
+      } catch (_) {}
+      const nudge = spawn(exe, [`--appdata-id=${cloneId}`], {
+        cwd: exeCwd,
+        env: nudgeEnv,
+        detached: true,
+        stdio: 'ignore',
+      })
+      nudge.unref()
+      logger('pc-profile-already-running-nudge', { profileName, cloneId, pid: runtimeState.pid })
+    } catch (e) {
+      try {
+        logger('pc-profile-already-running-nudge-failed', {
+          profileName,
+          message: e && e.message ? e.message : String(e),
+        })
+      } catch (_) {}
+    }
     logger('pc-profile-launch-skip-already-running', { profileName, pid: runtimeState.pid })
     return { ok: true, pid: runtimeState.pid, cloneId, profileRoot: desktopEnv.profileRoot, alreadyRunning: true }
   }
@@ -1230,19 +1507,18 @@ async function launchPcProfile(profileName, opts = {}) {
   }
   let proxyFallback = null
   if (proxyArg.needsBridge) {
-    // Resilient launch: if the local proxy-auth bridge fails to start (port
-    // exhausted / firewall blocks self-test / upstream slow), don't abort the
-    // launch. Try URL-based auth (--proxy-server=http://user:pass@host:port);
-    // if that also can't be built (only HTTP proxies support it), fall back
-    // to no-proxy and warn the user. The intent is "always open Zalo" —
-    // network problems should NEVER prevent the window from showing.
+    // Fail closed: never launch with --no-proxy-server when the user enabled
+    // proxy. If the local bridge fails, try URL-embedded auth (still via proxy)
+    // for HTTP(S); otherwise abort so Zalo does not use direct internet.
     let bridge = null
+    let bridgeErrorMessage = ''
     try {
       bridge = await ensureProxyBridge(profileName, meta.proxy || {}, logger)
     } catch (bridgeError) {
+      bridgeErrorMessage = bridgeError?.message || String(bridgeError || 'unknown')
       logger('pc-profile-proxy-bridge-failed', {
         profileName,
-        message: bridgeError?.message || 'unknown',
+        message: bridgeErrorMessage,
       })
     }
 
@@ -1256,7 +1532,6 @@ async function launchPcProfile(profileName, opts = {}) {
         bridgePort: bridge.port,
       }
     } else {
-      // Bridge unavailable → try URL-auth fallback (only HTTP/HTTPS).
       const protocol = String(meta.proxy?.protocol || 'HTTP').toUpperCase()
       if (protocol !== 'SOCKS5' && meta.proxy?.username) {
         const proto = protocol === 'HTTPS' ? 'https' : 'http'
@@ -1272,15 +1547,32 @@ async function launchPcProfile(profileName, opts = {}) {
           port: Number(meta.proxy.port || 0),
         })
       } else {
-        // No safe fallback for SOCKS5+auth or no-creds bridge fail → no proxy.
-        args.push('--no-proxy-server')
-        proxyRoute = { mode: 'no-proxy-fallback', serverArg: '--no-proxy-server' }
-        proxyFallback = { mode: 'no-proxy', reason: 'bridge-failed' }
-        logger('pc-profile-proxy-fallback-no-proxy', { profileName })
+        const detail = bridgeErrorMessage || 'Không thể tạo proxy bridge.'
+        return {
+          ok: false,
+          message:
+            'Proxy đang bật nhưng không thể thiết lập kênh an toàn (bridge). ' +
+            'Zalo không được mở để tránh kết nối không qua proxy. ' +
+            (protocol === 'SOCKS5'
+              ? 'SOCKS5 có xác thực: hãy sửa proxy hoặc đổi sang HTTP proxy có hỗ trợ auth qua bridge.'
+              : 'Kiểm tra host/port, username/password hoặc mạng tới server proxy.') +
+            (detail && detail !== 'unknown' ? ` Chi tiết: ${detail}` : ''),
+        }
       }
     }
   } else {
     args.push(proxyArg.value)
+  }
+
+  if (proxyPreflight.enabled) {
+    const argLine = args.join(' ')
+    if (argLine.includes('--no-proxy-server') || !/--proxy-server=/.test(argLine)) {
+      return {
+        ok: false,
+        message:
+          'Lỗi nội bộ: proxy đang bật nhưng tham số khởi động Zalo không chứa --proxy-server — không mở để tránh đi mạng trực tiếp.',
+      }
+    }
   }
 
   // Proxies don't carry QUIC/HTTP3 (UDP). Some Zalo builds attempt QUIC first
@@ -1318,6 +1610,11 @@ async function launchPcProfile(profileName, opts = {}) {
     )
   } catch (_) {}
 
+  const tempDir = path.join(desktopEnv.localPath, 'Temp')
+  const localLowDir = path.join(desktopEnv.profileRoot, 'AppData', 'LocalLow')
+  ensureDir(tempDir)
+  ensureDir(localLowDir)
+
   const env = {
     ...process.env,
     ZALOMASK_CLONE_ID: cloneId,
@@ -1328,7 +1625,31 @@ async function launchPcProfile(profileName, opts = {}) {
     USERPROFILE: desktopEnv.profileRoot,
     APPDATA: desktopEnv.roamingPath,
     LOCALAPPDATA: desktopEnv.localPath,
+    TEMP: tempDir,
+    TMP: tempDir,
   }
+  try {
+    const homeAbs = path.resolve(desktopEnv.profileRoot)
+    const hm = /^([A-Za-z]:)(.*)$/.exec(homeAbs.replace(/\//g, '\\'))
+    if (hm) {
+      env.HOMEDRIVE = hm[1]
+      env.HOMEPATH = hm[2] && hm[2].length ? hm[2] : '\\'
+    }
+  } catch (_) {}
+  try {
+    const pathBits = [exeCwd, path.join(exeCwd, 'resources')].filter((p) => {
+      try {
+        return fs.existsSync(p)
+      } catch {
+        return false
+      }
+    })
+    if (pathBits.length) {
+      const prefix = pathBits.join(path.delimiter)
+      const tail = String(env.PATH || process.env.PATH || '')
+      env.PATH = tail ? `${prefix}${path.delimiter}${tail}` : prefix
+    }
+  } catch (_) {}
 
   try {
     const child = spawn(exe, args, {
@@ -1412,6 +1733,7 @@ async function launchPcProfile(profileName, opts = {}) {
 
     requestFocusForPid(livePid, logger, { profileName, source: 'fresh-launch' })
     logger('pc-profile-launched', { profileName, cloneId, pid: livePid, spawnedPid, resolvedVia, profileRoot: desktopEnv.profileRoot })
+    writeProxyLaunchStamp(desktopEnv.profileRoot, meta.proxy || {})
     return { ok: true, pid: livePid, cloneId, profileRoot: desktopEnv.profileRoot, proxyFallback }
   } catch (e) {
     return { ok: false, message: e.message }
@@ -1421,20 +1743,22 @@ async function launchPcProfile(profileName, opts = {}) {
 /** Build runtime diagnostics after runtimeDir resolved (writable bundle or user copy). */
 function buildRuntimeStatus(runtimeDir) {
   if (!runtimeDir) {
-    let message = 'Runtime bundle chưa có. Chạy scripts/setup-zalo-runtime.ps1 trước khi build.'
+    let message =
+      'Không thấy Zalo PC để chạy chế độ clone. Dev: chạy scripts/setup-zalo-runtime.ps1 và đặt dưới app/zalo-runtime/.'
     if (app.isPackaged) {
       message =
-        'Thiếu Zalo PC trong bản cài (installer không chứa đủ runtime). ' +
-        'Tải lại bản ZaloMask-Setup từ GitHub Release hoặc trang chủ (bản build CI đã đóng gói runtime). ' +
-        'Nếu tự build: chạy scripts/setup-zalo-runtime.ps1 rồi npm run dist.'
+        'Thiếu Zalo PC trong bản cài (installer không đóng gói runtime trong resources). ' +
+        'Build lại với scripts/setup-zalo-runtime.ps1 rồi npm run predist && npm run dist.'
     }
     if (lastRuntimePickFailure && lastRuntimePickFailure.kind === 'user-copy-failed') {
       const ud = String(lastRuntimePickFailure.userDest || '')
       const src = String(lastRuntimePickFailure.source || '')
       const ce = String(lastRuntimePickFailure.copyError || '').slice(0, 280)
       message =
-        'Không sao chép được Zalo PC vào thư mục có thể ghi (thường do đường dẫn Program Files chỉ đọc). ' +
-        'Đóng Zalo + ZaloMask, xóa thư mục \"' + ud + '\" nếu còn sót bản copy lỗi, rồi mở lại. ' +
+        'Không sao chép được Zalo PC vào thư mục có thể ghi (copy-failed / EBUSY). ' +
+        'Thoát hết Zalo.exe (khay + Task Manager), đóng ZaloMask, xóa \"' +
+        ud +
+        '\", rồi thử lại. ' +
         (src ? '(Mã: ' + src + ') ' : '') +
         (ce ? ce : '')
     }

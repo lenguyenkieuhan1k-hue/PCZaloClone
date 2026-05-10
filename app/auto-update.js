@@ -2,11 +2,10 @@
 
 /* ZaloMask auto-updater
  *
- * Polls GitHub Releases API for the repo configured in config.json
- * (`github.owner` + `github.repo`). Compares the latest tag (semver) against
- * the running app version. Exposes IPC for renderer-driven check/download/
- * install. Skips signature verification — the app is shipped unsigned for
- * now (Phase 4 will add EV cert).
+ * 1) Nếu config.json có `updates.manifestUrl` (HTTPS JSON) → lấy bản mới + link
+ *    tải từ web/CDN của bạn, không cần GitHub Releases.
+ * 2) Ngược lại → GitHub Releases API (`github.owner` + `github.repo`).
+ * So sánh semver; IPC check/download/install. Chưa xác minh chữ ký file.
  *
  * Why not electron-updater? The dep is pinned to v4 in package.json and
  * upgrading to v6 (required for Electron 35) is a yak-shave. A manual
@@ -23,7 +22,10 @@ const CHECK_INTERVAL_MS = 60 * 60 * 1000   // re-check every hour
 const USER_AGENT = 'ZaloMask-Updater'
 const CONFIG_GITHUB_KEY = 'github'
 
-let cachedRelease = null              // last fetched release object
+let cachedRelease = null              // GitHub release object when using GitHub provider
+/** @type {{ version: string, installerUrl: string, releaseNotes: string, publishedAt: string, assetName: string } | null} */
+let cachedManifest = null             // custom manifest when using updates.manifestUrl
+let updateChannel = ''               // '' | 'manifest' | 'github'
 let downloadInfo = null               // { localPath, version }
 let downloading = false
 let lastError = null
@@ -60,6 +62,12 @@ function getGithubConfig(rootConfigPath) {
   }
 }
 
+function getManifestUrl(rootConfigPath) {
+  const cfg = getConfig(rootConfigPath)
+  const u = cfg.updates && typeof cfg.updates === 'object' ? cfg.updates.manifestUrl : ''
+  return String(u || '').trim()
+}
+
 /* ---------- HTTP ---------- */
 
 function httpsGetJson(url, options) {
@@ -86,6 +94,41 @@ function httpsGetJson(url, options) {
           return reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 200)}`))
         }
         try { resolve(JSON.parse(body)) } catch (e) { reject(e) }
+      })
+    })
+    req.on('error', reject)
+    req.setTimeout(15000, () => req.destroy(new Error('timeout')))
+  })
+}
+
+/** JSON từ URL tùy ý (manifest cập nhật), không dùng header GitHub API. */
+function httpsGetGenericJson(url) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        Accept: 'application/json, text/plain;q=0.9, */*;q=0.8',
+      },
+    }, (res) => {
+      const chunks = []
+      if (res.statusCode === 302 || res.statusCode === 301) {
+        const loc = res.headers.location
+        if (!loc) return reject(new Error('redirect without location'))
+        httpsGetGenericJson(loc).then(resolve, reject)
+        res.resume()
+        return
+      }
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8')
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          return reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 200)}`))
+        }
+        try {
+          resolve(JSON.parse(body))
+        } catch (e) {
+          reject(e)
+        }
       })
     })
     req.on('error', reject)
@@ -168,17 +211,95 @@ function pickInstallerAsset(release) {
   return null
 }
 
+function installerNameFromUrl(installerUrl) {
+  try {
+    const p = new URL(installerUrl).pathname || ''
+    const base = path.basename(p)
+    return base && /\.exe$/i.test(base) ? base : 'ZaloMask-Setup.exe'
+  } catch (_) {
+    return 'ZaloMask-Setup.exe'
+  }
+}
+
+function validateHttpsUrl(u) {
+  try {
+    const x = new URL(u)
+    return x.protocol === 'https:' ? x.href : ''
+  } catch (_) {
+    return ''
+  }
+}
+
+/**
+ * Manifest mẫu (host tĩnh hoặc API của bạn):
+ * { "version": "26.3.41", "installerUrl": "https://cdn.../ZaloMask-Setup-26.3.41.exe",
+ *   "releaseNotes": "...", "publishedAt": "ISO" }
+ */
+async function checkForUpdatesFromManifest(manifestUrl, localVersion) {
+  const body = await httpsGetGenericJson(manifestUrl)
+  const remoteVersion = parseVersion(body.version || body.tag || '0.0.0').raw
+  const installerUrl = validateHttpsUrl(String(body.installerUrl || body.url || '').trim())
+  if (!installerUrl) {
+    throw new Error('Manifest thiếu installerUrl hợp lệ (HTTPS).')
+  }
+  const hasUpdate = isNewer(remoteVersion, localVersion)
+  cachedRelease = null
+  if (!hasUpdate) {
+    cachedManifest = null
+    updateChannel = ''
+  } else {
+    cachedManifest = {
+      version: remoteVersion,
+      installerUrl,
+      releaseNotes: String(body.releaseNotes || body.notes || body.body || ''),
+      publishedAt: String(body.publishedAt || body.published_at || ''),
+      assetName: installerNameFromUrl(installerUrl),
+    }
+    updateChannel = 'manifest'
+  }
+  return {
+    ok: true,
+    hasUpdate,
+    localVersion,
+    remoteVersion,
+    releaseUrl: installerUrl,
+    releaseNotes: String(body.releaseNotes || body.notes || body.body || ''),
+    publishedAt: (body.publishedAt || body.published_at) || null,
+    assetName: hasUpdate ? installerNameFromUrl(installerUrl) : null,
+    updateChannel: hasUpdate ? 'manifest' : '',
+  }
+}
+
 /* ---------- Public surface ---------- */
 
 async function checkForUpdates(opts) {
   opts = opts || {}
   const rootConfigPath = opts.configPath
   if (!rootConfigPath) throw new Error('checkForUpdates: configPath bắt buộc')
-  const gh = getGithubConfig(rootConfigPath)
   const localVersion = app.getVersion()
+  cachedRelease = null
+  cachedManifest = null
+  updateChannel = ''
+
+  const manifestUrl = getManifestUrl(rootConfigPath)
+  if (manifestUrl) {
+    if (!/^https:\/\//i.test(manifestUrl)) {
+      lastError = 'updates.manifestUrl phải là HTTPS.'
+      return { ok: false, hasUpdate: false, localVersion, message: lastError }
+    }
+    try {
+      return await checkForUpdatesFromManifest(manifestUrl, localVersion)
+    } catch (error) {
+      lastError = error.message || String(error)
+      return { ok: false, hasUpdate: false, localVersion, message: lastError }
+    }
+  }
+
+  const gh = getGithubConfig(rootConfigPath)
   try {
     const release = await fetchLatestRelease(gh.owner, gh.repo, gh.prerelease)
     cachedRelease = release
+    updateChannel = 'github'
     const remoteVersion = parseVersion(release.tag_name || release.name || '0.0.0').raw
     const hasUpdate = isNewer(remoteVersion, localVersion)
     return {
@@ -189,7 +310,8 @@ async function checkForUpdates(opts) {
       releaseUrl: release.html_url,
       releaseNotes: release.body || '',
       publishedAt: release.published_at,
-      assetName: hasUpdate ? (pickInstallerAsset(release) || {}).name || null : null
+      assetName: hasUpdate ? (pickInstallerAsset(release) || {}).name || null : null,
+      updateChannel: 'github',
     }
   } catch (error) {
     lastError = error.message || String(error)
@@ -200,20 +322,36 @@ async function checkForUpdates(opts) {
 async function downloadUpdate(opts) {
   opts = opts || {}
   if (downloading) return { ok: false, message: 'Đang tải, vui lòng đợi.' }
-  if (!cachedRelease) {
+  if (!cachedRelease && !cachedManifest) {
     const checked = await checkForUpdates({ configPath: opts.configPath })
     if (!checked.ok || !checked.hasUpdate) {
       return { ok: false, message: 'Không có bản cập nhật để tải.' }
     }
   }
-  const asset = pickInstallerAsset(cachedRelease)
-  if (!asset) return { ok: false, message: 'Release không có file installer .exe.' }
+
+  let downloadUrl = ''
+  let fileName = 'ZaloMask-Setup.exe'
+  let versionStr = ''
+
+  if (cachedManifest && updateChannel === 'manifest') {
+    downloadUrl = cachedManifest.installerUrl
+    fileName = cachedManifest.assetName || installerNameFromUrl(downloadUrl)
+    versionStr = cachedManifest.version
+  } else {
+    const asset = pickInstallerAsset(cachedRelease)
+    if (!asset) return { ok: false, message: 'Release không có file installer .exe.' }
+    downloadUrl = asset.browser_download_url
+    fileName = asset.name
+    versionStr = parseVersion(cachedRelease.tag_name || '').raw
+  }
+
+  if (!downloadUrl) return { ok: false, message: 'Không có URL tải installer.' }
 
   downloading = true
   try {
     const tmpDir = path.join(os.tmpdir(), 'zalomask-update')
     fs.mkdirSync(tmpDir, { recursive: true })
-    const localPath = path.join(tmpDir, asset.name)
+    const localPath = path.join(tmpDir, fileName)
     const onProgress = (info) => {
       const win = BrowserWindow.getAllWindows()[0]
       if (win && !win.isDestroyed()) {
@@ -224,11 +362,11 @@ async function downloadUpdate(opts) {
         })
       }
     }
-    await httpsDownload(asset.browser_download_url, localPath, onProgress)
+    await httpsDownload(downloadUrl, localPath, onProgress)
     downloadInfo = {
       localPath,
-      version: parseVersion(cachedRelease.tag_name || '').raw,
-      assetName: asset.name
+      version: versionStr,
+      assetName: fileName
     }
     return { ok: true, localPath, version: downloadInfo.version }
   } catch (error) {
@@ -272,6 +410,14 @@ function registerIpc(opts) {
   ipcMain.handle('update-install', async () => installAndQuit())
   ipcMain.handle('update-status', async () => ({
     ok: true,
+    updateChannel: updateChannel || null,
+    cachedManifest: cachedManifest
+      ? {
+          version: cachedManifest.version,
+          installerUrl: cachedManifest.installerUrl,
+          publishedAt: cachedManifest.publishedAt,
+        }
+      : null,
     cachedRelease: cachedRelease ? {
       tagName: cachedRelease.tag_name,
       publishedAt: cachedRelease.published_at,

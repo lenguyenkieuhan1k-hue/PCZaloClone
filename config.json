@@ -11,5 +11,10 @@
   },
   "licenseApiBaseUrl": "https://zalomask.com",
   "licensePublicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAc4xNNqNBkCAbrE3/M7KSSU9ZuLAO3Rj/epoHCUd/+eI=\n-----END PUBLIC KEY-----",
-  "requireLicense": false
+  "requireLicense": false,
+  "dpapiSmokeTest": {
+    "lastOk": true,
+    "lastAtMs": 1778269373627,
+    "keyLength": 32
+  }
 }
