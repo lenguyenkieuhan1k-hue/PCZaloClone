@@ -97,7 +97,7 @@ function Download-ZaloSetupExe {
     foreach ($u in $urls) {
         for ($attempt = 1; $attempt -le 5; $attempt++) {
             try {
-                Write-Host "  Download ZaloSetup (try $attempt): $u" -ForegroundColor DarkGray
+                Write-Host ('  Download ZaloSetup (attempt {0}): {1}' -f $attempt, $u) -ForegroundColor DarkGray
                 Invoke-WebRequest -Uri $u -OutFile $OutPath -UseBasicParsing -TimeoutSec 300 -Headers $headers
                 $len = 0
                 if (Test-Path $OutPath) { $len = (Get-Item $OutPath).Length }
