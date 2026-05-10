@@ -29,11 +29,11 @@ code thực tế, cập nhật lại đây ngay khi PR.
 
 ## 1. Mục tiêu sản phẩm
 
-ZaloMask cho phép một user trên Windows chạy **nhiều tài khoản Zalo Web song
-song** trong cùng một ứng dụng Electron, mỗi tài khoản được cô lập 100% qua
-`partition` Chromium riêng + browser fingerprint giả lập riêng.
+ZaloMask cho Windows: **một shell Electron** quản lý nhiều **Zalo PC bundled**
+(song song / cô lập theo profile), mỗi profile có cây `%APPDATA%` / `%LOCALAPPDATA%`
+riêng và (tuỳ chọn) proxy + quyền riêng trong `meta.json`.
 
-## 2. Kiến trúc hiện tại (v2 — web2)
+## 2. Kiến trúc hiện tại (v2 — Electron + Zalo PC)
 
 ```
                 ┌────────────────────────────────────┐
@@ -41,28 +41,27 @@ song** trong cùng một ứng dụng Electron, mỗi tài khoản được cô 
                 │   app/main.v2.js                   │
                 │                                    │
                 │   • createMainWindow() → UI quản lý │
-                │   • openWebProfile() → 1 BrowserWin │
-                │     mỗi profile, partition riêng    │
+                │   • add/open profile → clone-runtime│
+                │     spawn Zalo.exe / proxy bridge   │
                 │   • license heartbeat 30s           │
                 │   • cloud sync (upload/download)    │
                 │   • auto-update GitHub Releases     │
-                └─────────┬─────────────────────┬────┘
-                          │ipc                  │
-                ┌─────────▼────────┐   ┌────────▼─────────┐
-                │ Renderer chính   │   │ N x BrowserWin   │
-                │ (UI quản lý)     │   │ chat.zalo.me     │
-                │                  │   │                  │
-                │ index-v2.html    │   │ web-preload-v2.js│
-                │ renderer-v2.js   │   │   • spoof FP     │
-                │ style-v2.css     │   │   • seed LS      │
-                │                  │   │   • capture LS   │
-                │ preload: app/    │   └──────────────────┘
+                └─────────┬──────────────────────────┘
+                          │ipc
+                ┌─────────▼────────┐
+                │ Renderer chính   │
+                │ (UI quản lý)     │
+                │ index-v2.html    │
+                │ renderer-v2.js   │
+                │ style-v2.css     │
                 │ preload.js       │
                 └──────────────────┘
+
+    N process: Zalo.exe (mỗi profile) — không còn cửa sổ BrowserWindow Zalo Web
 ```
 
-Mỗi profile lưu vào `profiles/<profileName>/meta.json` (cookies +
-localStorage + fingerprint + proxy).
+Meta + cấu hình mỗi profile: `profiles/<profileName>/meta.json` (cloneId, proxy,
+fingerprint còn trong JSON cho tương thích / export; không còn preload web).
 
 ## 3. Cấu trúc thư mục
 
@@ -70,17 +69,22 @@ localStorage + fingerprint + proxy).
 PCZaloClone/
 ├── app/
 │   ├── main.v2.js                ← entry point (đọc package.json.main)
+│   ├── chromium-win-bootstrap.js ← bootstrap trước khi require electron
 │   ├── preload.js                ← context bridge cho UI quản lý
-│   ├── web-preload-v2.js         ← preload cho mỗi Zalo Web BrowserWindow
 │   ├── auto-update.js            ← poll GitHub Releases, IPC update-*
-│   ├── proxy-test.ps1            ← script test proxy thủ công (dev)
+│   ├── proxy-live-check.js       ← curl test proxy (+ logic dùng chung main)
+│   ├── proxy-bridge.js           ← HTTP proxy cục bộ + Proxy-Authorization
+│   ├── proxy-bridge-verbose.js   ← biến thể log chi tiết (debug)
 │   ├── package.json              ← main: "main.v2.js"
+│   ├── clone/
+│   │   ├── clone-runtime.js      ← launch / terminate Zalo PC, APPDATA junctions
+│   │   ├── clone-main-shim.js    ← preload/shim trong tiến trình Zalo
+│   │   └── asar-patcher.js, privacy-shim.js, clone-session-preload.js, …
 │   ├── renderer/
 │   │   ├── index-v2.html         ← UI chính
 │   │   ├── renderer-v2.js
 │   │   ├── style-v2.css
 │   │   └── assets/{app-icon.ico,app-icon.png,logo-zalomask.svg}
-│   └── legacy/                   ← code v1 (clone Zalo PC). Không build.
 ├── web/
 │   ├── app/
 │   │   ├── page.tsx              ← landing
@@ -124,9 +128,9 @@ PCZaloClone/
 | `listProfiles()` | `list-profiles` | Danh sách profile cùng meta cô đọng |
 | `getProfileInfo(name)` | `get-profile-info` | Toàn bộ meta JSON của profile |
 | `addProfile(displayName, proxy)` | `add-profile` | Tạo profile mới (kiểm tra quota) |
-| `openProfile(name)` | `open-profile` | Mở Zalo Web BrowserWindow |
-| `launchAll()` | `launch-all` | Mở mọi profile song song |
-| `deleteProfile(name)` | `delete-profile` | Xoá profile + partition data |
+| `openProfile(name)` | `open-profile` | Launch / focus Zalo PC cho profile (`cloneRuntime.launchPcProfile`) |
+| `launchAll()` | `launch-all` | Mở mọi profile Zalo PC song song |
+| `deleteProfile(name)` | `delete-profile` | Xoá profile + meta + dữ liệu partition/clone liên quan |
 | `updateProxy(name, proxy)` | `update-proxy` | Cập nhật proxy meta |
 | `checkProxy(proxy)` | `check-proxy` | Test proxy bằng curl |
 | `exportProfile(name, opts?)` | `export-profile` | Xuất package desktop (`.zmb`/…); `opts.deleteAfterExport` xóa profile sau khi lưu file |
@@ -165,9 +169,11 @@ Events từ main → renderer:
 
 ```json
 {
-  "displayName": "Zalo Web 1",
-  "profileName": "zalo_web_1",
-  "launchMode": "web2",
+  "displayName": "Zalo PC 1",
+  "profileName": "zalo_pc_1",
+  "cloneId": "<stable-id>",
+  "launchMode": "pc",
+  "license_id": "<uuid optional>",
   "createdAt": "ISO",
   "updatedAt": "ISO",
   "proxy": {
@@ -179,53 +185,24 @@ Events từ main → renderer:
     "username": "...",
     "password": "..."
   },
-  "fingerprint": {
-    "id": "0e297e9b10044ecd",
-    "version": 1,
-    "userAgent": "Mozilla/5.0 ...",
-    "platform": "Win32",
-    "vendor": "Google Inc.",
-    "language": "vi-VN",
-    "languages": ["vi-VN", "en-US", "en"],
-    "timezone": "Asia/Ho_Chi_Minh",
-    "hardwareConcurrency": 8,
-    "deviceMemory": 8,
-    "maxTouchPoints": 0,
-    "webglVendor": "...",
-    "webglRenderer": "..."
-  },
-  "webSession": {
-    "zUuid": "<uuid>",
-    "cookies": [...],
-    "cookieString": "name=value; ...",
-    "localStorage": { "sh_z_uuid": "...", ... },
-    "session": null,
-    "seededAt": "ISO",
-    "cookieCapturedAt": "ISO",
-    "storageCapturedAt": "ISO"
-  }
+  "fingerprint": { "id": "...", "version": 1, "userAgent": "..." },
+  "privacy": { "hideTyping": false, "hideSeen": false, "hideReceived": false }
 }
 ```
 
-## 6. Web profile lifecycle
+Import cũ có thể vẫn còn khóa như `webSession` / `launchMode: web2` — normalize ở runtime
+vẫn **launch Zalo PC**.
 
-`openWebProfile(profileName)` (main.v2.js dòng ~770):
+## 6. PC profile lifecycle (`open-profile` / `add-profile`)
 
-1. Đọc meta. Nếu không có fingerprint → `generateFingerprint()` random + lưu lại.
-2. Lấy `session.fromPartition('persist:web2:<profileName>')`.
-3. Nếu `proxy.enabled`: chạy `checkProxyViaCurl` → fail mở → throw lỗi.
-4. `ses.setProxy(buildSessionProxyConfig(proxy))`.
-5. Tạo `BrowserWindow` với `partition` + preload `web-preload-v2.js` +
-   `additionalArguments: [--zalomask-profile=<name>, --zalomask-zuuid=<uuid>]`.
-6. `setUserAgent(fingerprint.userAgent || ZALO_WEB_USER_AGENT)`.
-7. `loadURL('https://chat.zalo.me/')` (fallback `id.zalo.me/account?...`).
-8. Đăng ký `cookies.on('changed')` → `scheduleCookieSave` 1.5s debounce.
-9. `web-preload-v2.js` capture localStorage qua IPC `v2:web-session-snapshot`
-   sau load+5s và load+20s.
+Điểm vào chính trong `app/main.v2.js`:
 
-`web-preload-v2.js` áp fingerprint qua `Object.defineProperty(Navigator.prototype, ...)`,
-patch `Intl.DateTimeFormat.prototype.resolvedOptions`, monkey-patch
-`WebGLRenderingContext.getParameter` → tránh Zalo phát hiện máy clone.
+1. Đọc `meta`, gắn `cloneId` thiếu → `cloneRuntime.cloneIdFor(profileName)`.
+2. `ensurePcRuntimePatchReady` → bundle đã patch trong user runtime (xem §0).
+3. `validatePcRuntimeProxy`; HTTP proxy có auth → `proxy-bridge` cục bộ + `--proxy-server` trỏ localhost.
+4. `cloneRuntime.launchPcProfile(profileName, { meta, profileDir, logger })`:
+   junction `%USERPROFILE%`/AppData theo clone, spawn `Zalo.exe` từ `zalo-runtime`.
+5. Nếu đang chạy: cùng flow refocus / áp proxy (xem logic `getPcProfileRuntimeState`).
 
 ## 7. License client
 
@@ -376,13 +353,10 @@ Luồng chính sản phẩm chỉ gồm Electron app + web license/payment.
 - **`main.v2.js` đọc `package.json.main`** — nếu file truncated, Electron
   sẽ load nhầm hoặc crash. Đã có sample bị truncated 2 lần do tool sync,
   cẩn thận khi sửa qua tool Write/Edit.
-- **`session.fromPartition('persist:web2:<n>')`** — nếu profileName chứa ký
-  tự đặc biệt (slash, colon), Chromium reject. `slugify()` đã xử nhưng kiểm
-  tra lại nếu sửa.
-- **`additionalArguments` không escape** — preload đọc raw `process.argv`,
-  cẩn thận quote nếu profileName chứa space.
-- **Cookies-Network/Cookies SQLite** không còn dùng — Chromium tự lưu trong
-  partition data. Backup chỉ qua IPC export (cookies + localStorage thuần).
+- **`profileName` không được chứa ký tự path nguy hiểm** (`/`, `\`, `:`, …);
+  các đường dẫn hiển thị nên sanitize.
+- **Shortcut / CLI `--zalomask-*`** đọc `process.argv` — tránh ký tự cần escape
+  trên Windows nếu gây ambiguity.
 - **Heartbeat poll mỗi 30s** — nếu mất mạng, không có grace period offline
   (todo). Khi bị kicked, app auto-upload cloud rồi terminate tiến trình Zalo
   PC theo `pid.txt` trước khi wipe local profiles.
@@ -400,315 +374,8 @@ Luồng chính sản phẩm chỉ gồm Electron app + web license/payment.
 
 ## 13. Không nên làm
 
-- Đừng thêm code mới vào `app/legacy/` — chỉ giữ tham khảo, sẽ xoá hẳn sau.
-- Đừng đọc `process.env.APPDATA` để lưu data — dùng `app.getPath('userData')`
-  (nhưng tốt nhất giữ data trong `profiles/` của repo để portable).
-- Đừng commit `profiles/`, `license-state.json`, `app-runtime.log`,
-  `.env.local`, `*.json` export, `*.pfx`. Đã có `.gitignore`.
-- Đừng đụng `electron-builder` config trong `app/package.json` mà không test
-  build local trước (`npx electron-builder --win nsis --x64 --publish never`).
-
-
-Đọc file này TRƯỚC khi sửa code. Nếu thấy bất cứ chỗ nào file này lệch với
-code thực tế, cập nhật lại đây ngay khi PR.
-
-## 1. Mục tiêu sản phẩm
-
-ZaloMask cho phép một user trên Windows chạy **nhiều tài khoản Zalo Web song
-song** trong cùng một ứng dụng Electron, mỗi tài khoản được cô lập 100% qua
-`partition` Chromium riêng + browser fingerprint giả lập riêng.
-
-## 2. Kiến trúc hiện tại (v2 — web2)
-
-```
-                ┌────────────────────────────────────┐
-                │   ZaloMask Electron (main process) │
-                │   app/main.v2.js                   │
-                │                                    │
-                │   • createMainWindow() → UI quản lý │
-                │   • openWebProfile() → 1 BrowserWin │
-                │     mỗi profile, partition riêng    │
-                │   • license heartbeat 30s           │
-                │   • auto-update GitHub Releases     │
-                └─────────┬─────────────────────┬────┘
-                          │ipc                  │
-                ┌─────────▼────────┐   ┌────────▼─────────┐
-                │ Renderer chính   │   │ N x BrowserWin   │
-                │ (UI quản lý)     │   │ chat.zalo.me     │
-                │                  │   │                  │
-                │ index-v2.html    │   │ web-preload-v2.js│
-                │ renderer-v2.js   │   │   • spoof FP     │
-                │ style-v2.css     │   │   • seed LS      │
-                │                  │   │   • capture LS   │
-                │ preload: app/    │   └──────────────────┘
-                │ preload.js       │
-                └──────────────────┘
-```
-
-Mỗi profile lưu vào `profiles/<profileName>/meta.json` (cookies +
-localStorage + fingerprint + proxy).
-
-## 3. Cấu trúc thư mục
-
-```
-PCZaloClone/
-├── app/
-│   ├── main.v2.js                ← entry point (đọc package.json.main)
-│   ├── preload.js                ← context bridge cho UI quản lý
-│   ├── web-preload-v2.js         ← preload cho mỗi Zalo Web BrowserWindow
-│   ├── auto-update.js            ← poll GitHub Releases, IPC update-*
-│   ├── proxy-test.ps1            ← script test proxy thủ công (dev)
-│   ├── package.json              ← main: "main.v2.js"
-│   ├── renderer/
-│   │   ├── index-v2.html         ← UI chính
-│   │   ├── renderer-v2.js
-│   │   ├── style-v2.css
-│   │   └── assets/{app-icon.ico,app-icon.png,logo-zalomask.svg}
-│   └── legacy/                   ← code v1 (clone Zalo PC). Không build.
-├── web/
-│   ├── app/
-│   │   ├── page.tsx              ← landing
-│   │   ├── pricing/page.tsx
-│   │   ├── checkout/[plan]/page.tsx
-│   │   ├── dashboard/page.tsx
-│   │   ├── admin/page.tsx
-│   │   ├── auth/sign-in/page.tsx
-│   │   ├── auth/callback/route.ts
-│   │   ├── terms/page.tsx
-│   │   ├── privacy/page.tsx
-│   │   └── api/
-│   │       ├── activate/route.ts
-│   │       ├── heartbeat/route.ts
-│   │       ├── claim-free/route.ts
-│   │       ├── sepay-webhook/route.ts
-│   │       └── dev/seed-license/route.ts
-│   ├── lib/
-│   │   ├── supabase.ts          ← browser/server/admin clients
-│   │   ├── plans.ts             ← bảng giá nguồn (6 tier: tier-1 free + 5 paid)
-│   │   ├── license-token.ts     ← Ed25519 sign/verify
-│   │   └── auth-helpers.ts
-│   ├── supabase/migrations/0001_init.sql
-│   ├── scripts/smoke-license.ps1
-│   └── package.json
-├── profiles/                     ← user profiles (gitignored)
-├── config.json                   ← app settings + license API base + GitHub repo
-├── README.md
-├── AGENTS.md                     ← file này
-└── KE_HOACH.md
-```
-
-## 4. IPC API (preload.js ↔ main.v2.js)
-
-| `window.api.method` | IPC channel | Mô tả |
-|---|---|---|
-| `listProfiles()` | `list-profiles` | Danh sách profile cùng meta cô đọng |
-| `getProfileInfo(name)` | `get-profile-info` | Toàn bộ meta JSON của profile |
-| `addProfile(displayName, proxy)` | `add-profile` | Tạo profile mới (kiểm tra quota) |
-| `openProfile(name)` | `open-profile` | Mở Zalo Web BrowserWindow |
-| `launchAll()` | `launch-all` | Mở mọi profile song song |
-| `deleteProfile(name)` | `delete-profile` | Xoá profile + partition data |
-| `updateProxy(name, proxy)` | `update-proxy` | Cập nhật proxy meta |
-| `checkProxy(proxy)` | `check-proxy` | Test proxy bằng curl |
-| `exportProfile(name, opts?)` | `export-profile` | Xuất package desktop (`.zmb`/…); `opts.deleteAfterExport` xóa profile sau khi lưu file |
-| `exportProfiles(names, opts?)` | `export-profiles` | Sao lưu nhiều profile; `opts.deleteAfterExport` tương tự |
-| `importProfile()` | `import-profile` | Nhập package `.zlp/.zip`, fallback JSON legacy |
-| `createProfileShortcut(name)` | `create-profile-shortcut` | Tạo shortcut Desktop mở trực tiếp profile |
-| `openProfilesFolder()` | `open-profiles-folder` | Mở thư mục `profiles/` |
-| `getSettings()` | `get-settings` | Đọc privacy + global flags |
-| `setSetting(key, value)` | `set-setting` | Ghi settings |
-| `getSystemHealth()` | `get-system-health` | Snapshot tình trạng app |
-| `exportDiagnostics()` | `export-diagnostics` | Lưu ZIP chẩn đoán (manifest + runtime + log đã redact) |
-| `logToMain(level, message, detail?)` | `client-log` | Renderer gửi lỗi JS / reject vào `app-runtime.log` |
-| `getLicenseStatus()` | `get-license-status` | Đọc license-state.json |
-| `activateLicense(key)` | `activate-license` | Gọi `/api/activate` |
-| `deactivateLicense()` | `deactivate-license` | Xoá license-state.json |
-| `heartbeatLicense()` | `license-heartbeat` | Gọi `/api/heartbeat` thủ công |
-| `updateCheck()` | `update-check` | Poll GitHub Releases ngay |
-| `updateDownload()` | `update-download` | Tải installer |
-| `updateInstall()` | `update-install` | Chạy installer + quit |
-| `updateStatus()` | `update-status` | Tình trạng download |
-| `closeWindow()` | `close-window` (send) | Đóng cửa sổ chính |
-| `minimizeWindow()` | `minimize-window` (send) | Thu nhỏ |
-
-Events từ main → renderer:
-- `profile-updated(profileName)` — sau capture session
-- `license-updated(state)` — sau activate / heartbeat
-- `license-kicked({status, message, state})` — server báo kicked/expired
-- `update-available({localVersion, remoteVersion, releaseNotes})`
-- `update-download-progress({percent, received, total})`
-
-## 5. Cấu trúc `profiles/<name>/meta.json`
-
-```json
-{
-  "displayName": "Zalo Web 1",
-  "profileName": "zalo_web_1",
-  "launchMode": "web2",
-  "createdAt": "ISO",
-  "updatedAt": "ISO",
-  "proxy": {
-    "enabled": true,
-    "protocol": "HTTP",
-    "host": "1.2.3.4",
-    "port": 8080,
-    "authEnabled": true,
-    "username": "...",
-    "password": "..."
-  },
-  "fingerprint": {
-    "id": "0e297e9b10044ecd",
-    "version": 1,
-    "userAgent": "Mozilla/5.0 ...",
-    "platform": "Win32",
-    "vendor": "Google Inc.",
-    "language": "vi-VN",
-    "languages": ["vi-VN", "en-US", "en"],
-    "timezone": "Asia/Ho_Chi_Minh",
-    "hardwareConcurrency": 8,
-    "deviceMemory": 8,
-    "maxTouchPoints": 0,
-    "webglVendor": "...",
-    "webglRenderer": "..."
-  },
-  "webSession": {
-    "zUuid": "<uuid>",
-    "cookies": [...],
-    "cookieString": "name=value; ...",
-    "localStorage": { "sh_z_uuid": "...", ... },
-    "session": null,
-    "seededAt": "ISO",
-    "cookieCapturedAt": "ISO",
-    "storageCapturedAt": "ISO"
-  }
-}
-```
-
-## 6. Web profile lifecycle
-
-`openWebProfile(profileName)` (main.v2.js dòng ~770):
-
-1. Đọc meta. Nếu không có fingerprint → `generateFingerprint()` random + lưu lại.
-2. Lấy `session.fromPartition('persist:web2:<profileName>')`.
-3. Nếu `proxy.enabled`: chạy `checkProxyViaCurl` → fail mở → throw lỗi.
-4. `ses.setProxy(buildSessionProxyConfig(proxy))`.
-5. Tạo `BrowserWindow` với `partition` + preload `web-preload-v2.js` +
-   `additionalArguments: [--zalomask-profile=<name>, --zalomask-zuuid=<uuid>]`.
-6. `setUserAgent(fingerprint.userAgent || ZALO_WEB_USER_AGENT)`.
-7. `loadURL('https://chat.zalo.me/')` (fallback `id.zalo.me/account?...`).
-8. Đăng ký `cookies.on('changed')` → `scheduleCookieSave` 1.5s debounce.
-9. `web-preload-v2.js` capture localStorage qua IPC `v2:web-session-snapshot`
-   sau load+5s và load+20s.
-
-`web-preload-v2.js` áp fingerprint qua `Object.defineProperty(Navigator.prototype, ...)`,
-patch `Intl.DateTimeFormat.prototype.resolvedOptions`, monkey-patch
-`WebGLRenderingContext.getParameter` → tránh Zalo phát hiện máy clone.
-
-## 7. License client
-
-State lưu ở `<repo-root>/license-state.json`:
-
-```json
-{
-  "key": "ZM-...",
-  "sessionId": "uuid",
-  "token": "ed25519-signed",
-  "tokenExpiresAt": "ISO",
-  "licenseExpiresAt": "ISO",
-  "status": "active|kicked|expired",
-  "lastHeartbeatAt": "ISO",
-  "accountQuota": 6
-}
-```
-
-`getEffectiveProfileQuota()` rule:
-- `requireLicense=false` (default) + chưa có license → `{ quota: 1, source: 'free' }`
-- License `active` + chưa expire → `{ quota: license.accountQuota, source: 'license' }`
-- License `expired/kicked` → fallback theo `requireLicense` (true → 0, false → 1)
-
-`add-profile` IPC kiểm tra quota; vượt → trả `{ ok: false, message }`.
-
-Heartbeat (`runHeartbeatOnce`):
-- Server trả `status: 'ok'` → cập nhật `lastHeartbeatAt`.
-- Server trả `status: 'kicked'` → auto-upload cloud, terminate tiến trình
-  Zalo PC theo `pid.txt`, wipe local profiles, rồi broadcast `license-kicked`.
-- Server trả `status: 'expired'` → chỉ broadcast `license-kicked`, không wipe.
-
-## 8. Auto-update
-
-`auto-update.js`:
-- Poll `https://api.github.com/repos/<owner>/<repo>/releases/latest` mỗi 60 phút.
-- So sánh semver `release.tag_name` vs `app.getVersion()`.
-- Nếu newer + có asset `ZaloMask-Setup-*.exe` → broadcast `update-available`.
-- IPC `update-download` tải về `tmp`, `update-install` chạy installer detached.
-
-`config.json` cần có:
-
-```json
-{
-  "github": { "owner": "OWNER", "repo": "REPO", "prerelease": false }
-}
-```
-
-CI workflow `.github/workflows/release.yml`: tag `v*` → electron-builder NSIS
-→ publish lên GitHub Release.
-
-## 9. Web (zalomask.com)
-
-| Route | Mục đích |
-|---|---|
-| `/` | Landing |
-| `/pricing` | 6 tier (tier-1 free + 5 paid) |
-| `/checkout/[plan]?d=1m\|3m\|6m\|1y` | QR SePay (free → /api/claim-free) |
-| `/dashboard` | License + thiết bị active |
-| `/admin` | Doanh thu + users + licenses (gate `ADMIN_EMAILS`) |
-| `/auth/sign-in` | Google OAuth |
-| `/auth/callback` | Token exchange + set cookie |
-| `/api/activate` | Electron app activate key |
-| `/api/heartbeat` | Single-session check |
-| `/api/sepay-webhook` | SePay → tạo key + email |
-| `/api/claim-free` | Cấp key tier-1 free (1/user) |
-| `/api/dev/seed-license` | Dev test (NODE_ENV != production) |
-
-Schema Postgres: `web/supabase/migrations/0001_init.sql` — bảng `users`,
-`licenses`, `sessions`, `payments`, `audit_log`.
-
-License token Ed25519 — sign ở `web/lib/license-token.ts`, verify ở
-`app/main.v2.js::verifyLicenseToken`. Public key paste vào
-`config.json::licensePublicKeyPem`.
-
-## 10. Extension module
-
-Module Chrome extension đã được loại khỏi scope repository hiện tại.
-Luồng chính sản phẩm chỉ gồm Electron app + web license/payment.
-
-## 11. Gotchas
-
-- **`chromium-win-bootstrap.js` + `spellcheck: false` (main window)** — tránh
-  lỗi cache GPU/disk trên Windows và đơ UI khi gõ trong modal. Gọi ngay sau
-  `require('electron')`. **`npm run predist`** chạy `assert-chromium-bootstrap.js`;
-  không xóa hook đó khi đổi script build.
-- **`main.v2.js` đọc `package.json.main`** — nếu file truncated, Electron
-  sẽ load nhầm hoặc crash. Đã có sample bị truncated 2 lần do tool sync,
-  cẩn thận khi sửa qua tool Write/Edit.
-- **`session.fromPartition('persist:web2:<n>')`** — nếu profileName chứa ký
-  tự đặc biệt (slash, colon), Chromium reject. `slugify()` đã xử nhưng kiểm
-  tra lại nếu sửa.
-- **`additionalArguments` không escape** — preload đọc raw `process.argv`,
-  cẩn thận quote nếu profileName chứa space.
-- **Cookies-Network/Cookies SQLite** không còn dùng — Chromium tự lưu trong
-  partition data. Backup chỉ qua IPC export (cookies + localStorage thuần).
-- **Heartbeat poll mỗi 30s** — nếu mất mạng, không có grace period offline
-  (todo). Kicked dialog có 600ms delay trước khi đóng webWindows.
-- **`license-state.json` ở root**, không trong `app/`. Đã thêm vào
-  `.gitignore`.
-- **`app-runtime.log` append-only** — chưa rotate. Ở dev có thể to nhanh.
-- **Chẩn đoán máy khách:** Cài đặt → «Xuất chẩn đoán» (ZIP), hoặc CLI  
-  `ZaloMask.exe --zalomask-diagnostics=C:\path\diag.zip` (thoát ngay sau khi ghi file).  
-  Script: `scripts/collect-zalomask-diagnostics.ps1` (khi app không chạy).
-
-## 12. Không nên làm
-
-- Đừng thêm code mới vào `app/legacy/` — chỉ giữ tham khảo, sẽ xoá hẳn sau.
+- Đừng nhét thêm **client desktop thứ hai** (.NET/WPF/ChromiumEmbed riêng) —
+  chỉ Electron trong `app/` là shell quản lý.
 - Đừng đọc `process.env.APPDATA` để lưu data — dùng `app.getPath('userData')`
   (nhưng tốt nhất giữ data trong `profiles/` của repo để portable).
 - Đừng commit `profiles/`, `license-state.json`, `app-runtime.log`,

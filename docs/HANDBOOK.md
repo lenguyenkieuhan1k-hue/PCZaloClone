@@ -15,8 +15,8 @@
 ## 2) Profiles (dữ liệu user)
 
 - Mỗi profile lưu trong `profiles/<profileName>/meta.json`
-- Với Zalo Web (web2): session/cookies/localStorage được capture/seed qua preload.
-- Với Zalo PC (pc): runtime launch qua `app/clone/` và dùng “bundled runtime” (Zalo.exe + app.asar đã patch).
+- Luồng chính **Zalo PC**: launch qua `app/clone/clone-runtime.js` + bundled `app/zalo-runtime/`.
+- Dữ liệu import cũ có thể còn field web2 — normalize vẫn chạy PC (xem `AGENTS.md`).
 
 Nguồn sự thật về format `meta.json`, IPC, cloud sync: xem `../AGENTS.md`.
 
@@ -27,8 +27,7 @@ Nơi đi qua chính:
 - Renderer gọi `window.api.openProfile(name)` → IPC `open-profile`
 - Main xử lý tại `app/main.v2.js`
   - Load meta + kiểm tra quota/license
-  - Nếu là web2: tạo `BrowserWindow` với `partition` và preload `web-preload-v2.js`
-  - Nếu là pc: gọi vào runtime launcher trong `app/clone/clone-runtime.js`
+  - `ensurePcRuntimePatchReady` → `cloneRuntime.launchPcProfile` trong `app/clone/clone-runtime.js`
 
 ## 4) Proxy (PC runtime)
 
