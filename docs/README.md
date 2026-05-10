@@ -14,7 +14,7 @@ Tài liệu repo được gom về `docs/` để root gọn hơn.
 
 ## Quyết định kỹ thuật
 
-- `decisions/calling-2026-05-08.md`: Chiến lược nghe/gọi (Zalo web bị gate → quick-switch Zalo PC + mobile companion).
+- `decisions/calling-2026-05-08.md`: Chiến lược nghe/gọi (quick-switch sang Zalo PC + mobile companion; không thay desktop bằng client native WPF trong repo).
 
 ## Lưu trữ (archive)
 

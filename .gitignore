@@ -80,7 +80,3 @@ app/zalo-runtime/app-repacked.asar
 app/bridge-traffic.log
 app/proxy-bridge-*.log
 **/ProgramData/ZaloMask/proxy/
-
-# --- .NET native shell (parallel) ---
-native/**/bin/
-native/**/obj/

@@ -17,6 +17,8 @@
 | `AGENTS.md` | Tài liệu kỹ thuật cho AI assistants làm việc trên repo. |
 | `docs/` | Handbook + decisions + archive (xem `docs/README.md`). |
 
+> **Ứng dụng Windows (UI quản lý + profile):** chỉ **[Electron + Chromium](app/)** trong repo này — không có client song song (WPF/.NET) đi kèm.
+
 ## Cài đặt + chạy app
 
 ```powershell
@@ -63,16 +65,14 @@ trả Ed25519-signed token. Heartbeat 30s/lần qua `POST /api/heartbeat`. Một
 key chỉ active được trên 1 máy tại một thời điểm — kích hoạt máy mới sẽ
 tự kick máy cũ.
 
-## Gioi han quan trong: nghe/goi
+## Giới hạn nghe/gọi (policy Zalo)
 
-- Runtime hien tai cua app su dung Zalo Web (`chat.zalo.me`).
-- Tinh nang nghe/goi video/audio duoc Zalo mo ta la chi danh cho Zalo PC,
-	nen ban web se khong goi duoc day du.
-- Vi vay, huong su dung de xuyen suot la:
-	1. Dung ZaloMask de quan ly chat da tai khoan.
-	2. Khi can goi, mo Zalo PC chinh chu de thuc hien cuoc goi.
+Stack gọi video/thoại đúng chuẩn Zalo là **Zalo PC**; client web hoặc embedding web có ràng buộc signaling / device-trust riêng. **ZaloMask** dùng **Electron** làm shell (tab Nhân bản, Cài đặt, license…) và **Zalo PC bundled** cho từng profile — không coi shell Electron như một “trình gọi WebRTC thay thế Zalo PC”.
 
-Ghi chu: day la gioi han tu phia nen tang Zalo, khong phai loi giao dien cua app.
+Hướng dùng thực tế:
+
+1. Quản lý chat đa tài khoản trong ZaloMask.
+2. Khi cần gọi: làm theo luồng **chuyển / mở Zalo PC** trong app (chi tiết: `docs/decisions/calling-2026-05-08.md`).
 
 ## Vấn đề & support
 

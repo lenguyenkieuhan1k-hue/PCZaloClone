@@ -81,9 +81,6 @@ PCZaloClone/
 │   │   ├── style-v2.css
 │   │   └── assets/{app-icon.ico,app-icon.png,logo-zalomask.svg}
 │   └── legacy/                   ← code v1 (clone Zalo PC). Không build.
-├── native/                       ← Shell WPF .NET (preview, song song Electron). Xem native/README.md
-│   ├── ZaloMask.Native.sln
-│   └── ZaloMask.Shell/
 ├── web/
 │   ├── app/
 │   │   ├── page.tsx              ← landing
@@ -468,9 +465,6 @@ PCZaloClone/
 │   │   ├── style-v2.css
 │   │   └── assets/{app-icon.ico,app-icon.png,logo-zalomask.svg}
 │   └── legacy/                   ← code v1 (clone Zalo PC). Không build.
-├── native/                       ← Shell WPF .NET (preview, song song Electron). Xem native/README.md
-│   ├── ZaloMask.Native.sln
-│   └── ZaloMask.Shell/
 ├── web/
 │   ├── app/
 │   │   ├── page.tsx              ← landing
