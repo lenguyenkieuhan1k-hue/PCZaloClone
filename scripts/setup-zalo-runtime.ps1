@@ -12,7 +12,6 @@
   Sau khi xong:  cd app && npx electron-builder --win nsis --x64 --publish never
 #>
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
@@ -60,16 +59,16 @@ Write-Host ""
 
 function Wait-ForZaloExe {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$ZaloExePath,
+        [Parameter(Mandatory)]
+        [string]$FullPath,
         [int]$TimeoutSec = 240
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        if (Test-Path -LiteralPath $ZaloExePath) { return $true }
+        if (Test-Path -LiteralPath $FullPath) { return $true }
         Start-Sleep -Seconds 3
     }
-    return (Test-Path -LiteralPath $ZaloExePath)
+    return (Test-Path -LiteralPath $FullPath)
 }
 
 function Download-ZaloSetupExe {
@@ -156,13 +155,15 @@ function Install-ZaloViaWinget {
     }
 }
 
+Set-StrictMode -Version Latest
+
 if (-not (Test-Path -LiteralPath $zaloExeSrc)) {
     Write-Host 'Zalo PC chua cai. Dang cai tu dong...' -ForegroundColor Yellow
 
     if ($env:GITHUB_ACTIONS -eq 'true') {
         Install-ZaloViaWinget
         Sync-ZaloPathsFromDisk
-        if (-not (Wait-ForZaloExe -ZaloExePath $zaloExeSrc -TimeoutSec 300)) {
+        if (-not (Wait-ForZaloExe -FullPath $zaloExeSrc -TimeoutSec 300)) {
             Write-Warning 'winget chua tao Zalo.exe dung han; thu ZaloSetup.exe...'
         }
     }
@@ -175,7 +176,7 @@ if (-not (Test-Path -LiteralPath $zaloExeSrc)) {
         $setup = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru -NoNewWindow
         Write-Host ("  ZaloSetup ExitCode: " + $setup.ExitCode)
         Sync-ZaloPathsFromDisk
-        if (-not (Wait-ForZaloExe -ZaloExePath $zaloExeSrc -TimeoutSec 300)) {
+        if (-not (Wait-ForZaloExe -FullPath $zaloExeSrc -TimeoutSec 300)) {
             Write-Host "ERROR: Khong tim thay $zaloExeSrc sau khi cai." -ForegroundColor Red
             Write-Host 'Neu may ban co Zalo o vi tri khac, copy vao %LocalAppData%\Programs\Zalo hoac cai thu cong: https://zalo.me/pc' -ForegroundColor Yellow
             if (Test-Path -LiteralPath $zaloSrc) {
