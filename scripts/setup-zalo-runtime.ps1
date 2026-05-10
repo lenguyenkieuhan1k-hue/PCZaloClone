@@ -17,23 +17,59 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $destDir  = Join-Path $repoRoot 'app\zalo-runtime'
-$zaloSrc  = Join-Path $env:LOCALAPPDATA 'Programs\Zalo'
+
+function Get-ZaloInstallRoot {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Zalo'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Zalo'),
+        (Join-Path $env:ProgramFiles 'Zalo')
+    )
+    foreach ($dir in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($dir)) { continue }
+        $exe = Join-Path $dir 'Zalo.exe'
+        if (Test-Path -LiteralPath $exe) { return $dir }
+    }
+    return $null
+}
+
+function Sync-ZaloPathsFromDisk {
+    $found = Get-ZaloInstallRoot
+    if ($found) {
+        $script:zaloSrc = $found
+        $script:zaloExeSrc = Join-Path $found 'Zalo.exe'
+    }
+    # Đồng bộ alias phạm vi script (StrictMode: hàm không đọc được chỉ $script:)
+    Set-Variable -Scope Script -Name zaloSrc -Value $script:zaloSrc
+    Set-Variable -Scope Script -Name zaloExeSrc -Value $script:zaloExeSrc
+}
+
+$script:zaloSrc = Get-ZaloInstallRoot
+if (-not $script:zaloSrc) {
+    $script:zaloSrc = Join-Path $env:LOCALAPPDATA 'Programs\Zalo'
+}
+$script:zaloExeSrc = Join-Path $script:zaloSrc 'Zalo.exe'
+# Alias để các hàm dưới (StrictMode) luôn thấy biến ở phạm vi script
+$zaloSrc = $script:zaloSrc
+$zaloExeSrc = $script:zaloExeSrc
 
 Write-Host ""
 Write-Host "=== ZaloMask — setup-zalo-runtime ===" -ForegroundColor Cyan
 Write-Host ""
 
 # ── 1. Kiểm tra / cài Zalo PC ────────────────────────────────────────
-$zaloExeSrc = Join-Path $zaloSrc 'Zalo.exe'
 
 function Wait-ForZaloExe {
-    param([int]$TimeoutSec = 240)
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ZaloExePath,
+        [int]$TimeoutSec = 240
+    )
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        if (Test-Path $zaloExeSrc) { return $true }
+        if (Test-Path -LiteralPath $ZaloExePath) { return $true }
         Start-Sleep -Seconds 3
     }
-    return (Test-Path $zaloExeSrc)
+    return (Test-Path -LiteralPath $ZaloExePath)
 }
 
 function Download-ZaloSetupExe {
@@ -120,26 +156,29 @@ function Install-ZaloViaWinget {
     }
 }
 
-if (-not (Test-Path $zaloExeSrc)) {
+if (-not (Test-Path -LiteralPath $zaloExeSrc)) {
     Write-Host 'Zalo PC chua cai. Dang cai tu dong...' -ForegroundColor Yellow
 
     if ($env:GITHUB_ACTIONS -eq 'true') {
         Install-ZaloViaWinget
-        if (-not (Wait-ForZaloExe -TimeoutSec 300)) {
+        Sync-ZaloPathsFromDisk
+        if (-not (Wait-ForZaloExe -ZaloExePath $zaloExeSrc -TimeoutSec 300)) {
             Write-Warning 'winget chua tao Zalo.exe dung han; thu ZaloSetup.exe...'
         }
     }
 
-    if (-not (Test-Path $zaloExeSrc)) {
+    Sync-ZaloPathsFromDisk
+    if (-not (Test-Path -LiteralPath $zaloExeSrc)) {
         $installer = Join-Path $env:TEMP 'ZaloSetup.exe'
         Download-ZaloSetupExe -OutPath $installer
         Write-Host '  Chay ZaloSetup /S ...' -ForegroundColor Green
         $setup = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru -NoNewWindow
         Write-Host ("  ZaloSetup ExitCode: " + $setup.ExitCode)
-        if (-not (Wait-ForZaloExe -TimeoutSec 300)) {
+        Sync-ZaloPathsFromDisk
+        if (-not (Wait-ForZaloExe -ZaloExePath $zaloExeSrc -TimeoutSec 300)) {
             Write-Host "ERROR: Khong tim thay $zaloExeSrc sau khi cai." -ForegroundColor Red
             Write-Host 'Neu may ban co Zalo o vi tri khac, copy vao %LocalAppData%\Programs\Zalo hoac cai thu cong: https://zalo.me/pc' -ForegroundColor Yellow
-            if (Test-Path $zaloSrc) {
+            if (Test-Path -LiteralPath $zaloSrc) {
                 Write-Host 'Noi dung hien co trong Programs\Zalo:' -ForegroundColor DarkYellow
                 Get-ChildItem -LiteralPath $zaloSrc -Force -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  - $($_.Name)" }
             }
@@ -150,6 +189,7 @@ if (-not (Test-Path $zaloExeSrc)) {
     Write-Host "  Zalo da cai tai: $zaloSrc" -ForegroundColor Green
 }
 
+Sync-ZaloPathsFromDisk
 Write-Host "Nguon: $zaloSrc"
 
 # ── 2. Xóa dest cũ ─────────────────────────────────────────────────
