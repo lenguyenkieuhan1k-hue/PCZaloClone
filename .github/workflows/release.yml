@@ -58,8 +58,21 @@ jobs:
       - name: Strip Zalo runtime junk (smaller NSIS)
         run: node ../scripts/clean-zalo-runtime-pack.js
 
+      # secrets không được dùng trực tiếp trong `if:` — set output rồi so sánh
+      - name: Detect signing secret
+        id: signing_check
+        shell: bash
+        env:
+          B64: ${{ secrets.SIGNING_CERT_BASE64 }}
+        run: |
+          if [ -n "$B64" ]; then
+            echo "has_signing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_signing=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup code signing certificate (if available)
-        if: ${{ secrets.SIGNING_CERT_BASE64 != '' }}
+        if: steps.signing_check.outputs.has_signing == 'true'
         env:
           SIGNING_CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
           SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
