@@ -57,7 +57,7 @@ public partial class MainWindow : System.Windows.Window
             UseDescriptionForTitle = true,
             InitialDirectory = SafeFolderBrowserInitialPath(_profilesDir),
         };
-        if (dlg.ShowDialog() != DialogResult.OK) return;
+        if (((System.Windows.Forms.CommonDialog)dlg).ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
 
         var picked = dlg.SelectedPath.Trim();
         if (string.IsNullOrEmpty(picked)) return;
